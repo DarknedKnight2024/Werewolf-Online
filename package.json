@@ -1,0 +1,14 @@
+{
+  "name": "nightshift-werewolf",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Cross-device One Night Werewolf rooms",
+  "scripts": {
+    "start": "node server.js",
+    "check": "node --check app.js && node --check online.js && node --check server.js"
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "socket.io": "^4.8.1"
+  }
+}
