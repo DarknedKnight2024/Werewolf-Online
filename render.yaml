@@ -14,3 +14,11 @@ services:
         value: production
       - key: DATA_DIR
         value: /var/data
+      - key: ACCOUNT_ENCRYPTION_KEY
+        sync: false
+      - key: ADMIN_PATH
+        sync: false
+      - key: ADMIN_KEY
+        sync: false
+      - key: ADMIN_SECURITY_QA
+        sync: false

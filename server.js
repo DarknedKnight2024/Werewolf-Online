@@ -11,9 +11,35 @@ const io = new Server(httpServer, { cors: { origin: false } });
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, '.data');
 const roomFile = path.join(dataDir, 'rooms.json');
-const ROLES = ['Doppelganger', 'Werewolf', 'Minion', 'Mason', 'Seer', 'Robber', 'Troublemaker', 'Drunk', 'Insomniac', 'Hunter', 'Tanner', 'Villager'];
-const ROLE_ORDER = ['Werewolf', 'Minion', 'Mason', 'Seer', 'Robber', 'Troublemaker', 'Drunk', 'Insomniac', 'Hunter', 'Tanner', 'Villager'];
-const ICONS = ['🌙', '🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🕯️', '🍄'];
+const ROLES = ['Sentinel', 'Doppelganger', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Village Idiot', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const ROLE_ORDER = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Village Idiot', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const ICONS = ['🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🐝', '🦚', '🦔', '🐿️', '🦓', '🐙', '🪲', '🦋', '🐢', '🐬', '🦈', '🐧', '🐼', '🦩', '🦜', '🐊', '🦦', '🦥', '🦭', '🌲', '🍂', '🌻', '🪷', '🌵', '🌊', '🍄', '🌿', '🌼', '🌹', '🪻', '🌱', '🌙', '🌘', '☀️', '⚡', '❄️', '🌈', '🪐', '✨', '🌟', '☄️', '🌑', '🌕', '🔮', '🗝️', '🧿', '🪬', '🛡️', '⚔️', '👑', '🧪', '👻', '🧙', '🧚', '🧜', '🧸', '🦖', '🦄', '🐉', '🤖', '🪼', '🦂', '🕷️', '🎭', '🪭', '🪄', '🎃'];
+const ICON_THEMES = [
+  { name: 'Woodland', count: 14, tiers: [['Common', 5], ['Uncommon', 4], ['Rare', 3], ['Epic', 2]] },
+  { name: 'Wildlife', count: 14, tiers: [['Common', 4], ['Uncommon', 4], ['Rare', 4], ['Super Rare', 2]] },
+  { name: 'Nature', count: 12, tiers: [['Common', 3], ['Uncommon', 4], ['Rare', 3], ['Epic', 2]] },
+  { name: 'Sky & Space', count: 12, tiers: [['Uncommon', 4], ['Rare', 4], ['Super Rare', 3], ['Ultra', 1]] },
+  { name: 'Mystic', count: 12, tiers: [['Uncommon', 3], ['Rare', 3], ['Super Rare', 3], ['Epic', 2], ['Ultra', 1]] },
+  { name: 'Oddities', count: 12, tiers: [['Uncommon', 2], ['Rare', 2], ['Super Rare', 2], ['Epic', 2], ['Ultra', 1], ['Legendary', 1], ['Mythical', 1], ['Ancient', 1]] },
+];
+const RARITY_COSTS = { Common: 0, Uncommon: 100, Rare: 250, 'Super Rare': 500, Epic: 1000, Ultra: 2500, Legendary: null, Mythical: null, Ancient: null };
+const ICON_CATALOG = (() => {
+  const catalog = [];
+  let themeOffset = 0;
+  for (const theme of ICON_THEMES) {
+    const themeIcons = ICONS.slice(themeOffset, themeOffset + theme.count);
+    themeOffset += theme.count;
+    let iconOffset = 0;
+    for (const [rarity, count] of theme.tiers) {
+      for (const icon of themeIcons.slice(iconOffset, iconOffset + count)) catalog.push({ icon, theme: theme.name, rarity, cost: RARITY_COSTS[rarity] });
+      iconOffset += count;
+    }
+  }
+  return catalog;
+})();
+const ARTIFACTS = ['Claw of the Werewolf', 'Brand of the Villager', 'Cudgel of the Tanner', 'Mask of Muting', 'Shroud of Shame', 'Void of Nothingness', 'Bow of the Hunter', 'Sword of the Bodyguard', 'Cloak of the Prince', 'Mist of the Vampire', 'Dagger of the Traitor', 'Alien Artifact'];
+const UNAVAILABLE_ARTIFACTS = new Set(['Mist of the Vampire', 'Dagger of the Traitor', 'Alien Artifact']);
+const ARTIFACT_ROLES = { 'Claw of the Werewolf': 'Werewolf', 'Brand of the Villager': 'Villager', 'Cudgel of the Tanner': 'Tanner', 'Bow of the Hunter': 'Hunter', 'Sword of the Bodyguard': 'Bodyguard', 'Cloak of the Prince': 'Prince', 'Mist of the Vampire': 'Vampire', 'Dagger of the Traitor': 'Traitor', 'Alien Artifact': 'Alien' };
 const QUESTIONS = [
   'Who would be the last person you would trust with a secret?',
   'Who is most likely to make it through a night in the woods?',
@@ -21,14 +47,181 @@ const QUESTIONS = [
   'Who has the most convincing poker face?',
 ];
 const rooms = new Map();
+const savedVillages = new Map();
+const accounts = new Map();
 const timers = new Map();
+const savedVillagesFile = path.join(dataDir, 'saved-villages.json');
+const accountsFile = path.join(dataDir, 'accounts.enc');
+const accountKeyFile = path.join(dataDir, 'accounts.key');
+let accountEncryptionKey;
+const rateLimits = new Map();
+const adminChallenges = new Map();
+const adminSessions = new Map();
 
 function randomToken() { return crypto.randomBytes(24).toString('base64url'); }
+function shortKey(length = 8) { return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length).toUpperCase(); }
+function normalizeKey(value) { return String(value || '').trim().toUpperCase(); }
 function tokenHash(token) { return crypto.createHash('sha256').update(String(token || '')).digest('hex'); }
+function getAccountEncryptionKey() {
+  if (process.env.ACCOUNT_ENCRYPTION_KEY) {
+    const key = Buffer.from(process.env.ACCOUNT_ENCRYPTION_KEY, 'base64');
+    if (key.length !== 32) throw new Error('ACCOUNT_ENCRYPTION_KEY must be a 32-byte base64 value.');
+    return key;
+  }
+  if (process.env.NODE_ENV === 'production') throw new Error('Set ACCOUNT_ENCRYPTION_KEY from a secure secret manager in production.');
+  fs.mkdirSync(dataDir, { recursive: true });
+  try { return fs.readFileSync(accountKeyFile); }
+  catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+    const key = crypto.randomBytes(32);
+    fs.writeFileSync(accountKeyFile, key, { mode: 0o600, flag: 'wx' });
+    return key;
+  }
+}
+function persistAccounts() {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', accountEncryptionKey, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify([...accounts.values()])), cipher.final()]);
+  const payload = JSON.stringify({ iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
+  const temporary = `${accountsFile}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, payload, { mode: 0o600 });
+  fs.renameSync(temporary, accountsFile);
+}
+function loadAccounts() {
+  accountEncryptionKey = getAccountEncryptionKey();
+  try {
+    const payload = JSON.parse(fs.readFileSync(accountsFile, 'utf8'));
+    const decipher = crypto.createDecipheriv('aes-256-gcm', accountEncryptionKey, Buffer.from(payload.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+    const data = Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()]);
+    for (const account of JSON.parse(data.toString('utf8'))) accounts.set(account.id, account);
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw new Error(`Unable to decrypt account store: ${error.message}`);
+  }
+}
+function passwordHash(password, salt) {
+  return crypto.scryptSync(password, salt, 64, { N: 16384, r: 8, p: 1 }).toString('hex');
+}
+function writeEncryptedStore(file, value) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', accountEncryptionKey, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value)), cipher.final()]);
+  const payload = JSON.stringify({ version: 1, algorithm: 'AES-256-GCM', iv: iv.toString('base64'), tag: cipher.getAuthTag().toString('base64'), data: encrypted.toString('base64') });
+  const temporary = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(temporary, payload, { mode: 0o600 });
+  fs.renameSync(temporary, file);
+}
+function readEncryptedStore(file) {
+  const payload = JSON.parse(fs.readFileSync(file, 'utf8'));
+  if (payload.version === 1 && payload.algorithm === 'AES-256-GCM') {
+    const decipher = crypto.createDecipheriv('aes-256-gcm', accountEncryptionKey, Buffer.from(payload.iv, 'base64'));
+    decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+    return JSON.parse(Buffer.concat([decipher.update(Buffer.from(payload.data, 'base64')), decipher.final()]).toString('utf8'));
+  }
+  writeEncryptedStore(file, payload);
+  return payload;
+}
+function accountFromToken(token) {
+  if (!token) return null;
+  const digest = tokenHash(token);
+  const now = Date.now();
+  return [...accounts.values()].find((account) => account.sessions?.some((session) => session.hash === digest && session.expiresAt > now)) || null;
+}
+function publicAccount(account) {
+  const linkedPlayers = [];
+  for (const room of rooms.values()) {
+    for (const player of room.players) {
+      if (player.accountId === account.id) linkedPlayers.push({ code: room.code, name: player.name, key: player.key, stage: room.stage });
+    }
+  }
+  return { id: account.id, email: account.email, name: account.name, coins: account.coins, icons: account.icons, stats: account.stats, linkedPlayers, villages: [...savedVillages.values()].filter((village) => village.ownerAccountId === account.id).map(({ id, code, savedAt, hostKey, players, roles }) => ({ id, code, savedAt, hostKey, players: players.length, roles })) };
+}
+function recordAccountActivity(accountId, action, detail = '') {
+  const account = accounts.get(accountId);
+  if (!account) return;
+  account.activityLog ||= [];
+  account.activityLog.unshift({ at: timestamp(), action, detail: String(detail).slice(0, 180) });
+  account.activityLog.length = Math.min(account.activityLog.length, 200);
+  persistAccounts();
+}
+function adminAccountDetails(account) {
+  const playerSeats = [];
+  for (const room of rooms.values()) {
+    for (const player of room.players) {
+      if (player.accountId === account.id) playerSeats.push({ code: room.code, name: player.name, icon: player.icon, connected: Boolean(player.connected), stage: room.stage });
+    }
+  }
+  const villages = [...savedVillages.values()].filter((village) => village.ownerAccountId === account.id).map((village) => ({
+    code: village.code,
+    savedAt: village.savedAt,
+    players: village.players.map(({ name, icon, connected }) => ({ name, icon, connected: Boolean(connected) })),
+    roles: village.roles,
+  }));
+  return {
+    id: account.id,
+    email: account.email,
+    name: account.name,
+    createdAt: account.createdAt,
+    coins: account.coins,
+    icons: account.icons.map((icon) => ({ icon, ...(ICON_CATALOG.find((item) => item.icon === icon) || {}) })),
+    stats: account.stats,
+    sessionCount: (account.sessions || []).filter((session) => session.expiresAt > Date.now()).length,
+    playerSeats,
+    villages,
+    activityLog: account.activityLog || [],
+  };
+}
+function issueAccountSession(account) {
+  const token = randomToken();
+  account.sessions ||= [];
+  account.sessions = account.sessions.filter((session) => session.expiresAt > Date.now());
+  account.sessions.push({ hash: tokenHash(token), expiresAt: Date.now() + 30 * 24 * 60 * 60 * 1000 });
+  persistAccounts();
+  return token;
+}
+function requestAccount(request) {
+  const token = String(request.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  return accountFromToken(token);
+}
+function accountResponse(account, token) {
+  return { token, account: publicAccount(account) };
+}
+function limited(request, label, maximum, durationMs) {
+  const key = `${label}:${request.ip}`;
+  const now = Date.now();
+  const state = rateLimits.get(key);
+  if (!state || state.until <= now) rateLimits.set(key, { count: 1, until: now + durationMs });
+  else if (state.count >= maximum) return false;
+  else state.count += 1;
+  return true;
+}
+function secureEqual(left, right) {
+  const first = Buffer.from(String(left));
+  const second = Buffer.from(String(right));
+  return first.length === second.length && crypto.timingSafeEqual(first, second);
+}
+function configuredAdminQuestions() {
+  try {
+    const questions = JSON.parse(process.env.ADMIN_SECURITY_QA || '[]');
+    return Array.isArray(questions) && questions.length === 5 && questions.every((item) => item?.question && item?.answer)
+      ? questions.map(({ question, answer }) => ({ question: String(question).slice(0, 180), answerHash: tokenHash(String(answer).trim().toLowerCase()) }))
+      : [];
+  } catch { return []; }
+}
+function validAdminSession(token) {
+  const digest = tokenHash(token);
+  const expiry = adminSessions.get(digest);
+  if (!expiry || expiry <= Date.now()) {
+    adminSessions.delete(digest);
+    return false;
+  }
+  return true;
+}
 function newCode() {
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
   let code;
-  do { code = Array.from(crypto.randomBytes(4), (byte) => chars[byte % chars.length]).join(''); } while (rooms.has(code));
+  do { code = String(crypto.randomInt(100000, 1000000)); } while (rooms.has(code));
   return code;
 }
 function shuffle(values) {
@@ -42,22 +235,41 @@ function shuffle(values) {
 function timestamp() { return new Date().toISOString(); }
 function roleCount(room) { return Object.values(room.roles).reduce((sum, count) => sum + count, 0); }
 function effectiveRole(player) { return player.startCard === 'Doppelganger' ? player.effectiveRole : player.card; }
+function trueRole(player) { return player.artifactRole || player.transformedRole || effectiveRole(player); }
+function packRole(player) { return ['Werewolf', 'Mystic Wolf', 'Alpha Wolf'].includes(trueRole(player)); }
+function wolfTeamRole(player) { return ['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion'].includes(trueRole(player)); }
 function playerById(room, id) { return room.players.find((player) => player.id === id); }
+function playerOutcome(room, player) {
+  if (!room || room.stage !== 'results' || !room.winnerTeam) return null;
+  if (room.winnerTeam === 'tanner') return trueRole(player) === 'Tanner' ? 'You win' : 'You lose';
+  if (room.winnerTeam === 'village') return !wolfTeamRole(player) ? 'You win' : 'You lose';
+  return wolfTeamRole(player) ? 'You win' : 'You lose';
+}
+function inspectablePlayer(room, id, viewerId, allowSelf = false) {
+  const player = playerById(room, id);
+  if (!player || (!allowSelf && player.id === viewerId) || player.shielded) return null;
+  return player;
+}
+function recordCardView(player, target, role, label = 'Saw') {
+  player.seenCards ||= [];
+  player.seenCards.push({ name: target.name, role });
+  player.events.push(`${label} ${target.name}’s card: ${role}.`);
+}
 function roleQuestion(action, room) {
-  return ['Minion', 'Mason', 'Insomniac', 'Hunter', 'Tanner', 'Villager'].includes(action.role)
-    || (action.role === 'Werewolf' && room.players.filter((player) => effectiveRole(player) === 'Werewolf').length > 1);
+  return ['Sentinel', 'Doppelganger', 'Dream Wolf', 'Minion', 'Mason', 'Insomniac', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'].includes(action.role)
+    || (action.role === 'Werewolf' && room.players.filter(packRole).length > 1);
 }
 function persist() {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const data = JSON.stringify([...rooms.values()]);
-  const temporary = `${roomFile}.${process.pid}.tmp`;
-  fs.writeFileSync(temporary, data, { mode: 0o600 });
-  fs.renameSync(temporary, roomFile);
+  writeEncryptedStore(roomFile, [...rooms.values()]);
+}
+function persistSavedVillages() {
+  writeEncryptedStore(savedVillagesFile, [...savedVillages.values()]);
 }
 function loadRooms() {
   try {
-    const saved = JSON.parse(fs.readFileSync(roomFile, 'utf8'));
+    const saved = readEncryptedStore(roomFile);
     for (const room of saved) {
+      if (!/^\d{6}$/.test(room.code)) continue;
       room.players = room.players || [];
       room.players.forEach((player) => { player.connected = false; });
       room.hostConnected = false;
@@ -66,6 +278,17 @@ function loadRooms() {
     }
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Unable to load saved rooms:', error.message);
+  }
+}
+function loadSavedVillages() {
+  try {
+    const saved = readEncryptedStore(savedVillagesFile);
+    for (const entry of saved) {
+      savedVillages.set(entry.id, entry);
+      if (!rooms.has(entry.code)) rooms.set(entry.code, { ...entry, hostAccountId: entry.ownerAccountId || null, players: entry.players.map((player) => ({ ...player, tokenHash: tokenHash(player.key || randomToken()), key: player.key || shortKey(8), connected: Boolean(player.connected) })), hostConnected: false, stage: 'lobby' });
+    }
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Unable to load saved villages:', error.message);
   }
 }
 function updateRoom(room) {
@@ -78,38 +301,53 @@ function updateRoom(room) {
 }
 function snapshot(room, session) {
   const user = session.kind === 'player' ? playerById(room, session.playerId) : null;
-  const action = room.stage === 'night' ? room.nightQueue[room.nightIndex] : null;
+  const action = room.stage === 'night' && user ? room.nightQueue.find((entry) => entry.actorId === user.id) : null;
   const privateNotes = user ? [...(user.events || [])] : [];
-  if (user && room.stage === 'information' && effectiveRole(user) === 'Insomniac') privateNotes.push(`Your card is now: ${user.card}.`);
-  const wolves = user && room.stage === 'night' && effectiveRole(user) === 'Werewolf'
-    ? room.players.filter((player) => player.id !== user.id && effectiveRole(player) === 'Werewolf').map(({ id, name, icon }) => ({ id, name, icon }))
+  const wolves = user && room.stage === 'night' && packRole(user)
+    ? room.players.filter((player) => player.id !== user.id && wolfTeamRole(player)).map((player) => ({ id: player.id, name: player.name, icon: player.icon, dream: trueRole(player) === 'Dream Wolf' }))
     : [];
   const setupCounts = room.stage === 'information' || room.stage === 'discussion' || room.stage === 'voting' || room.stage === 'results'
     ? Object.fromEntries(room.players.map((player) => [player.id, room.players.filter((other) => other.setupTarget === player.setupTarget).length]))
     : {};
+  const hostView = session.kind === 'host';
   return {
     code: room.code,
     stage: room.stage,
     roles: room.roles,
     question: room.question,
     nightQuestion: room.nightQuestion,
-    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, connected: Boolean(player.connected), ready: Boolean(room.infoDone?.[player.id]), voted: Boolean(room.votes?.[player.id]), ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null } : {}) })),
+    artifactPool: session.kind === 'host' ? room.artifactPool : undefined,
+    publicEvents: room.publicEvents || [],
+    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.connected), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.infoDone?.[player.id]), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
     viewer: { kind: session.kind, playerId: session.playerId || null, name: user?.name || 'Moderator' },
-    action: action ? { index: room.nightIndex + 1, total: room.nightQueue.length, ...(session.kind === 'host' || user?.id === action.actorId ? { role: action.role, actorId: action.actorId, actorName: playerById(room, action.actorId)?.name, copied: Boolean(action.copied), requiresQuestion: roleQuestion(action, room), targets: action.role === 'Werewolf' ? wolves : undefined } : {}) } : null,
+    action: room.stage === 'night' ? {
+      ...(session.kind === 'host' ? {} : action ? { index: room.nightQueue.findIndex((entry) => entry.actorId === user.id) + 1, role: action.role, actorId: action.actorId, copied: Boolean(action.copied), requiresQuestion: roleQuestion(action, room), targets: packRole(user) ? wolves : undefined, submitted: Boolean(room.nightActions?.[user.id]) } : {}),
+      total: room.nightQueue.length,
+    } : null,
     setupIndex: room.setupIndex,
     setupCount: room.players.length,
     informationDone: Object.keys(room.infoDone || {}).length,
     discussionSeconds: room.discussionSeconds,
     timerRunning: Boolean(room.timerRunning),
     voteDone: Object.keys(room.votes || {}).length,
-    results: room.stage === 'results' ? { voteCounts: room.voteCounts, deadIds: room.deadIds, winner: room.winner, center: room.center } : null,
+    results: room.stage === 'results' ? { voteCounts: room.voteCounts, deadIds: room.deadIds, winner: room.winner, winnerTeam: room.winnerTeam, center: room.center, alphaReserves: Object.values(room.alphaReserves || {}) } : null,
     own: user ? {
-      card: room.stage === 'lobby' ? null : user.card,
-      startCard: room.stage === 'lobby' ? null : user.startCard,
-      effectiveRole: user.effectiveRole || null,
+      icon: user.icon,
+      card: ['roles', 'setup'].includes(room.stage) || (room.stage === 'sentinel' && user.startCard === 'Sentinel') ? user.startCard : null,
+      startCard: ['roles', 'setup'].includes(room.stage) || (room.stage === 'sentinel' && user.startCard === 'Sentinel') ? user.startCard : null,
+      effectiveRole: ['roles', 'setup'].includes(room.stage) ? user.effectiveRole || null : room.stage === 'results' ? user.effectiveRole || null : null,
       setupTarget: user.setupTarget || null,
       nightAnswer: user.nightAnswer || null,
       notes: privateNotes,
+      seenCards: room.stage === 'information' ? user.seenCards || [] : [],
+      wolfPack: room.stage === 'information' || room.stage === 'discussion' || room.stage === 'voting' || room.stage === 'results'
+        ? packRole(user)
+          ? room.players.filter((player) => player.id !== user.id && wolfTeamRole(player)).map((player) => ({ id: player.id, name: player.name, icon: player.icon }))
+          : []
+        : [],
+      artifact: ['information', 'discussion', 'voting'].includes(room.stage) ? user.artifactName || null : null,
+      rejoinKey: user.key,
+      shieldTarget: room.shields?.[user.id] || null,
       seerMode: user.seerMode || 'player',
       selectedIds: user.selectedIds || [],
       selectedCenter: user.selectedCenter || [],
@@ -117,10 +355,12 @@ function snapshot(room, session) {
       voteCounts: room.stage === 'results' ? room.voteCounts : null,
       deadIds: room.stage === 'results' ? room.deadIds : null,
       winner: room.stage === 'results' ? room.winner : null,
+      outcome: room.stage === 'results' ? playerOutcome(room, user) : null,
       center: room.stage === 'results' ? room.center : null,
+      alphaReserves: room.stage === 'results' ? room.alphaReserves : null,
       setupMatchCount: setupCounts[user.id] || 0,
     } : null,
-    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: room.setupIndex || 0, informationDone: Object.keys(room.infoDone || {}).length } : null,
+    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: room.setupIndex || 0, roleReadyCount: Object.keys(room.roleReady || {}).length, sentinelDone: Object.keys(room.shields || {}).length, nightDone: Object.keys(room.nightActions || {}).length, informationDone: Object.keys(room.infoDone || {}).length, hostKey: room.hostKey } : null,
   };
 }
 function ackError(ack, message) { if (typeof ack === 'function') ack({ error: message }); }
@@ -133,11 +373,15 @@ function authorize(socket, code, token, kind) {
   const room = rooms.get(String(code || '').trim().toUpperCase());
   if (!room) throw new Error('No room found with that code.');
   const digest = tokenHash(token);
+  const normalizedKey = normalizeKey(token);
   if (kind === 'host') {
-    if (digest !== room.hostTokenHash) throw new Error('This host session is not valid.');
-    return { room, session: { code: room.code, kind: 'host' } };
+    if (digest === room.hostTokenHash || normalizeKey(room.hostKey) === normalizedKey) {
+      room.hostConnected = true;
+      return { room, session: { code: room.code, kind: 'host' } };
+    }
+    throw new Error('This host session is not valid.');
   }
-  const player = room.players.find((entry) => entry.tokenHash === digest);
+  const player = room.players.find((entry) => entry.tokenHash === digest || normalizeKey(entry.key) === normalizedKey);
   if (!player) throw new Error('This player session is not valid. Rejoin with the room code.');
   player.connected = true;
   player.socketId = socket.id;
@@ -148,29 +392,146 @@ function roleQueue(room) {
   const doppelPlayers = room.players.filter((player) => player.startCard === 'Doppelganger');
   for (const player of doppelPlayers) queue.push({ role: player.effectiveRole, actorId: player.id, copied: true });
   for (const role of ROLE_ORDER) {
-    for (const player of room.players.filter((entry) => entry.startCard === role)) {
-      if (role === 'Werewolf' && doppelPlayers.some((entry) => entry.effectiveRole === 'Werewolf')) continue;
+    for (const player of room.players.filter((entry) => entry.startCard !== 'Doppelganger' && entry.startCard === role)) {
       queue.push({ role, actorId: player.id, copied: false });
     }
   }
+  room.alphaReserves = Object.fromEntries(queue.filter((action) => action.role === 'Alpha Wolf').map((action) => [action.actorId, 'Werewolf']));
   return queue;
 }
 function startNight(room) {
   room.nightQueue = roleQueue(room);
-  room.nightIndex = 0;
+  room.nightActions = {};
   room.stage = 'night';
   room.players.forEach((player) => { player.nightAnswer = null; player.selectedIds = []; player.selectedCenter = []; });
 }
-function advanceNight(room) {
-  room.nightIndex += 1;
-  if (room.nightIndex >= room.nightQueue.length) {
-    room.stage = 'information';
-    room.infoDone = {};
+function resolveNight(room) {
+  room.publicEvents = [];
+  for (const action of room.nightQueue) {
+    const player = playerById(room, action.actorId);
+    const submission = room.nightActions[player.id];
+    if (roleQuestion(action, room)) {
+      const answer = playerById(room, submission.targetId);
+      player.events.push(`Night question: chose ${answer.name}.`);
+      if (action.role === 'Minion') {
+        const wolves = room.players.filter(wolfTeamRole);
+        player.events.push(wolves.length ? `The werewolves are: ${wolves.map((entry) => entry.name).join(', ')}.` : 'There are no werewolves in the village.');
+      } else if (action.role === 'Mason') {
+        const masons = room.players.filter((entry) => entry.id !== player.id && trueRole(entry) === 'Mason');
+        player.events.push(masons.length ? `Other Masons: ${masons.map((entry) => entry.name).join(', ')}.` : 'You saw no other Masons.');
+      } else if (action.role === 'Insomniac') {
+        if (player.shielded) player.events.push('Your card was shielded by the Sentinel and could not be switched.');
+        else player.events.push(`Your card is now: ${player.card}.`);
+      }
+      continue;
+    }
+    const data = submission.data;
+    if (action.role === 'Werewolf') {
+      player.events.push(`Looked at center card ${data.centerIndex + 1}: ${room.center[data.centerIndex]}.`);
+    } else if (action.role === 'Mystic Wolf') {
+      recordCardView(player, playerById(room, data.targetId), trueRole(playerById(room, data.targetId)));
+    } else if (action.role === 'Alpha Wolf') {
+      const target = playerById(room, data.targetId);
+      const reserve = room.alphaReserves[player.id];
+      room.alphaReserves[player.id] = target.card;
+      target.card = reserve;
+      player.events.push(`Exchanged ${target.name}’s card with the hidden Werewolf card.`);
+    } else if (action.role === 'Seer') {
+      if (data.mode === 'player') {
+        const target = playerById(room, data.targetId);
+        recordCardView(player, target, trueRole(target));
+      } else {
+        for (const index of data.centerIndices) {
+          const card = { name: `center card #${index + 1}` };
+          player.seenCards ||= [];
+          player.seenCards.push({ name: card.name, role: room.center[index] });
+          player.events.push(`Saw ${card.name}: ${room.center[index]}.`);
+        }
+      }
+    } else if (action.role === 'Apprentice Seer') {
+      const index = data.centerIndex;
+      player.seenCards ||= [];
+      player.seenCards.push({ name: `center card #${index + 1}`, role: room.center[index] });
+      player.events.push(`Saw center card #${index + 1}: ${room.center[index]}.`);
+    } else if (action.role === 'Robber') {
+      if (data.pass) player.events.push('Chose not to swap cards.');
+      else {
+        const target = playerById(room, data.targetId);
+        [player.card, target.card] = [target.card, player.card];
+        player.events.push(`Swapped cards with ${target.name}. Your new card is ${player.card}.`);
+        player.seenCards ||= [];
+        player.seenCards.push({ name: 'your new card', role: player.card });
+      }
+    } else if (action.role === 'Witch') {
+      if (data.pass) player.events.push('Chose not to use the Witch ability.');
+      else {
+        const centerRole = room.center[data.centerIndex];
+        const target = playerById(room, data.targetId);
+        player.seenCards ||= [];
+        player.seenCards.push({ name: `center card #${data.centerIndex + 1}`, role: centerRole });
+        [room.center[data.centerIndex], target.card] = [target.card, room.center[data.centerIndex]];
+        player.events.push(`Saw center card #${data.centerIndex + 1}: ${centerRole}, then swapped it with ${target.name}’s card.`);
+      }
+    } else if (action.role === 'Paranormal Investigator') {
+      if (data.pass) player.events.push('Could not inspect two unshielded cards and passed.');
+      else {
+        for (const targetId of data.targetIds) {
+          const target = playerById(room, targetId);
+          const role = trueRole(target);
+          recordCardView(player, target, role);
+          if (['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Tanner'].includes(role)) {
+            player.transformedRole = role;
+            player.events.push(`You became ${role} after your investigation.`);
+            break;
+          }
+        }
+      }
+    } else if (action.role === 'Troublemaker') {
+      if (data.pass) player.events.push('Could not swap two unshielded cards and passed.');
+      else {
+        const targets = data.targetIds.map((id) => playerById(room, id));
+        [targets[0].card, targets[1].card] = [targets[1].card, targets[0].card];
+        player.events.push(`Swapped ${targets[0].name}’s and ${targets[1].name}’s cards.`);
+      }
+    } else if (action.role === 'Village Idiot') {
+      const ring = room.players.filter((entry) => entry.id !== player.id && !entry.shielded);
+      const before = ring.map((entry) => entry.card);
+      ring.forEach((entry, index) => {
+        const shift = data.direction === 'left' ? 1 : ring.length - 1;
+        entry.card = before[(index + shift) % ring.length];
+      });
+      player.events.push(`Moved the unshielded cards one seat to the ${data.direction}.`);
+    } else if (action.role === 'Drunk') {
+      [player.card, room.center[data.centerIndex]] = [room.center[data.centerIndex], player.card];
+      player.events.push('Swapped your card with a center card. You do not know which role you now hold.');
+    } else if (action.role === 'Insomniac') {
+      if (player.shielded) player.events.push('Your card was shielded by the Sentinel and could not be switched.');
+      else player.events.push(`Your card is now: ${player.card}.`);
+      player.seenCards ||= [];
+      if (!player.shielded) player.seenCards.push({ name: 'your card', role: player.card });
+    } else if (action.role === 'Revealer') {
+      const target = playerById(room, data.targetId);
+      const role = trueRole(target);
+      if (['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Tanner'].includes(role)) {
+        player.events.push(`Privately revealed ${target.name}’s card: ${role}.`);
+        player.seenCards ||= [];
+        player.seenCards.push({ name: target.name, role });
+      } else {
+        room.publicEvents.push(`${player.name} revealed ${target.name}’s card: ${role}.`);
+      }
+    } else if (action.role === 'Curator') {
+      const target = playerById(room, data.targetId);
+      const artifact = room.artifactPool[crypto.randomInt(room.artifactPool.length)];
+      target.artifact = true;
+      target.artifactName = artifact;
+      target.artifactRole = ARTIFACT_ROLES[artifact] || null;
+      player.events.push(`Placed a random artifact on ${target.name}.`);
+      target.events.push('A hidden artifact was placed on you. Check your private information.');
+      room.publicEvents.push(`${target.name} received a mysterious artifact.`);
+    }
   }
-}
-function currentActor(room) {
-  const action = room.nightQueue[room.nightIndex];
-  return action ? playerById(room, action.actorId) : null;
+  room.stage = 'information';
+  room.infoDone = {};
 }
 function validatePlayerTurn(room, playerId, stage) {
   if (room.stage !== stage) throw new Error('That action is not available now.');
@@ -195,20 +556,44 @@ function requirePlayer(socket) {
 function finishVotes(room) {
   const counts = Object.fromEntries(room.players.map((player) => [player.id, 0]));
   Object.values(room.votes).forEach((targetId) => { counts[targetId] += 1; });
-  const highest = Math.max(0, ...Object.values(counts));
-  const dead = highest ? room.players.filter((player) => counts[player.id] === highest) : [];
-  const hunter = dead.find((player) => effectiveRole(player) === 'Hunter');
+  const protectedIds = new Set(room.players.filter((player) => trueRole(player) === 'Bodyguard').map((player) => room.votes[player.id]).filter(Boolean));
+  const eligible = room.players.filter((player) => !protectedIds.has(player.id));
+  const highest = Math.max(0, ...eligible.map((player) => counts[player.id]));
+  const dead = highest > 1 ? eligible.filter((player) => counts[player.id] === highest) : [];
+  const hunter = dead.find((player) => trueRole(player) === 'Hunter');
   if (hunter && room.votes[hunter.id]) {
     const hunterTarget = playerById(room, room.votes[hunter.id]);
     if (hunterTarget && !dead.some((player) => player.id === hunterTarget.id)) dead.push(hunterTarget);
   }
-  const tanner = dead.find((player) => effectiveRole(player) === 'Tanner');
-  const wolfVoted = dead.some((player) => effectiveRole(player) === 'Werewolf');
-  const wolvesRemain = room.players.some((player) => effectiveRole(player) === 'Werewolf' && !dead.some((entry) => entry.id === player.id));
+  const tanner = dead.find((player) => trueRole(player) === 'Tanner');
+  const wolvesAlive = room.players.some((player) => !dead.some((entry) => entry.id === player.id) && wolfTeamRole(player));
   room.voteCounts = counts;
   room.deadIds = dead.map((player) => player.id);
-  room.winner = tanner ? `${tanner.name} wins as the Tanner.` : wolfVoted ? 'The village wins. A werewolf was voted out.' : !wolvesRemain ? 'The village wins. No werewolves remain among the players.' : 'The werewolves win. The village missed.';
+  room.winnerTeam = tanner ? 'tanner' : wolvesAlive ? 'wolves' : 'village';
+  room.winner = tanner
+    ? `${tanner.name} wins as the Tanner.`
+    : wolvesAlive
+      ? dead.length
+        ? 'The werewolf team wins. The village missed.'
+        : 'The werewolf team wins. Nobody was voted out and wolves remain.'
+      : 'The village wins. No werewolves remain among the players.';
   room.stage = 'results';
+  const rewardedAccounts = new Set();
+  for (const player of room.players) {
+    if (!player.accountId || rewardedAccounts.has(player.accountId)) continue;
+    const account = accounts.get(player.accountId);
+    if (!account) continue;
+    rewardedAccounts.add(player.accountId);
+    account.stats.games += 1;
+    const won = playerOutcome(room, player) === 'You win';
+    if (won) account.stats.wins += 1;
+    const coinsEarned = 25 + (won ? 15 : 0);
+    account.coins += coinsEarned;
+    account.activityLog ||= [];
+    account.activityLog.unshift({ at: timestamp(), action: 'Game completed', detail: `${won ? 'Won' : 'Played'} · ${coinsEarned} coins` });
+    account.activityLog.length = Math.min(account.activityLog.length, 200);
+  }
+  if (rewardedAccounts.size) persistAccounts();
   room.timerRunning = false;
   stopTimer(room.code);
 }
@@ -219,50 +604,224 @@ function stopTimer(code) {
 }
 function acked(handler) {
   return (payload = {}, ack) => {
-    try { handler(payload, ack); }
+    let acknowledged = false;
+    const respond = (response) => {
+      acknowledged = true;
+      if (typeof ack === 'function') ack(response);
+    };
+    try {
+      handler(payload, respond);
+      if (!acknowledged) respond({ ok: true });
+    }
     catch (error) { ackError(ack, error.message); }
   };
 }
 
+loadAccounts();
 loadRooms();
-app.use(express.static(__dirname));
+loadSavedVillages();
+app.set('trust proxy', 1);
+app.use(express.json({ limit: '16kb' }));
+app.get('/', (_request, response) => response.sendFile(path.join(__dirname, 'index.html')));
+app.get(['/styles.css', '/online.js', '/app.js'], (request, response) => response.sendFile(path.join(__dirname, path.basename(request.path))));
 app.get('/health', (_request, response) => response.json({ status: 'ok', rooms: rooms.size }));
+app.get('/api/villages', (request, response) => {
+  const account = requestAccount(request);
+  if (!account) return response.status(401).json({ error: 'Sign in to view saved villages.' });
+  const villages = [...savedVillages.values()].filter((entry) => entry.ownerAccountId === account.id).map(({ id, code, savedAt, hostKey, players, roles }) => ({ id, code, savedAt, hostKey, players: players.length, roles }));
+  return response.json({ villages });
+});
+app.post('/api/account/signup', (request, response) => {
+  if (!limited(request, 'signup', 20, 60 * 60 * 1000)) return response.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const email = String(request.body.email || '').trim().toLowerCase();
+  const name = String(request.body.name || '').trim().slice(0, 32);
+  const password = String(request.body.password || '');
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) || email.length > 254) return response.status(400).json({ error: 'Enter a valid email address.' });
+  if (password.length < 12 || password.length > 128) return response.status(400).json({ error: 'Password must be 12 to 128 characters.' });
+  if ([...accounts.values()].some((account) => account.email === email)) return response.status(409).json({ error: 'An account with that email already exists.' });
+  const salt = crypto.randomBytes(16).toString('hex');
+  const starterIcons = ICON_CATALOG.filter((item) => item.rarity === 'Common').map((item) => item.icon);
+  const account = { id: crypto.randomUUID(), email, name: name || email.split('@')[0].slice(0, 32), salt, passwordHash: passwordHash(password, salt), coins: 0, icons: starterIcons, stats: { games: 0, wins: 0 }, sessions: [], createdAt: timestamp() };
+  accounts.set(account.id, account);
+  recordAccountActivity(account.id, 'Account created');
+  const token = issueAccountSession(account);
+  return response.status(201).json(accountResponse(account, token));
+});
+app.post('/api/account/login', (request, response) => {
+  if (!limited(request, 'login', 10, 15 * 60 * 1000)) return response.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const email = String(request.body.email || '').trim().toLowerCase();
+  const password = String(request.body.password || '');
+  if (password.length > 128) return response.status(401).json({ error: 'Email or password is incorrect.' });
+  const account = [...accounts.values()].find((entry) => entry.email === email);
+  const salt = account?.salt || '00000000000000000000000000000000';
+  const candidate = Buffer.from(passwordHash(password, salt), 'hex');
+  const expected = Buffer.from(account?.passwordHash || '0'.repeat(128), 'hex');
+  if (!account || !crypto.timingSafeEqual(candidate, expected)) return response.status(401).json({ error: 'Email or password is incorrect.' });
+  recordAccountActivity(account.id, 'Signed in');
+  return response.json(accountResponse(account, issueAccountSession(account)));
+});
+app.get('/api/account/me', (request, response) => {
+  const account = requestAccount(request);
+  return account ? response.json({ account: publicAccount(account) }) : response.status(401).json({ error: 'Sign in to continue.' });
+});
+app.get('/api/account/catalog', (_request, response) => response.json({ icons: ICON_CATALOG }));
+app.post('/api/account/purchase-icon', (request, response) => {
+  const account = requestAccount(request);
+  if (!account) return response.status(401).json({ error: 'Sign in to continue.' });
+  const item = ICON_CATALOG.find((entry) => entry.icon === request.body.icon);
+  if (!item) return response.status(400).json({ error: 'That icon is not in the catalog.' });
+  if (account.icons.includes(item.icon)) return response.status(409).json({ error: 'You already own that icon.' });
+  if (item.cost === null) return response.status(403).json({ error: 'This rarity is available only through special events.' });
+  if (account.coins < item.cost) return response.status(400).json({ error: 'You do not have enough coins.' });
+  account.coins -= item.cost;
+  account.icons.push(item.icon);
+  recordAccountActivity(account.id, 'Icon purchased', `${item.rarity} · ${item.theme}`);
+  persistAccounts();
+  return response.json({ account: publicAccount(account) });
+});
+app.post('/api/account/logout', (request, response) => {
+  const account = requestAccount(request);
+  if (account) {
+    const token = String(request.get('authorization') || '').replace(/^Bearer\s+/i, '');
+    account.sessions = account.sessions.filter((session) => session.hash !== tokenHash(token));
+    persistAccounts();
+  }
+  return response.json({ ok: true });
+});
+app.post('/api/admin/challenge', (request, response) => {
+  const key = String(process.env.ADMIN_KEY || '');
+  const questions = configuredAdminQuestions();
+  if (!/^\d{15}$/.test(process.env.ADMIN_PATH || '') || !/^\d{15}$/.test(key) || questions.length !== 5) return response.status(404).json({ error: 'Not found.' });
+  if (!limited(request, 'admin-key', 5, 15 * 60 * 1000)) return response.status(429).json({ error: 'Too many attempts. Try again later.' });
+  if (!secureEqual(String(request.body.key || ''), key)) return response.status(401).json({ error: 'Access denied.' });
+  const challengeId = randomToken();
+  adminChallenges.set(tokenHash(challengeId), { questions, expiresAt: Date.now() + 10 * 60 * 1000 });
+  return response.json({ challengeId, questions: questions.map(({ question }) => question) });
+});
+app.post('/api/admin/verify', (request, response) => {
+  if (!limited(request, 'admin-verify', 5, 15 * 60 * 1000)) return response.status(429).json({ error: 'Too many attempts. Try again later.' });
+  const challengeHash = tokenHash(String(request.body.challengeId || ''));
+  const challenge = adminChallenges.get(challengeHash);
+  if (!challenge || challenge.expiresAt <= Date.now()) return response.status(401).json({ error: 'Challenge expired. Start again.' });
+  adminChallenges.delete(challengeHash);
+  const answers = Array.isArray(request.body.answers) ? request.body.answers : [];
+  const valid = answers.length === 5 && challenge.questions.every((item, index) => secureEqual(tokenHash(String(answers[index] || '').trim().toLowerCase()), item.answerHash));
+  if (!valid) return response.status(401).json({ error: 'One or more answers were incorrect.' });
+  const token = randomToken();
+  adminSessions.set(tokenHash(token), Date.now() + 15 * 60 * 1000);
+  return response.json({ token });
+});
+app.get('/api/admin/data', (request, response) => {
+  const token = String(request.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!validAdminSession(token)) return response.status(401).json({ error: 'Administrator session expired.' });
+  const entries = [...accounts.values()].map((account) => ({ id: account.id, email: account.email, name: account.name, createdAt: account.createdAt, games: account.stats?.games || 0, wins: account.stats?.wins || 0, coins: account.coins, collectedIcons: account.icons.length }));
+  return response.json({ analytics: { accounts: entries.length, activeRooms: [...rooms.values()].filter((room) => room.stage !== 'results').length, completedGames: entries.reduce((sum, account) => sum + account.games, 0), coinsHeld: entries.reduce((sum, account) => sum + account.coins, 0) }, accounts: entries });
+});
+app.get('/api/admin/accounts/:id', (request, response) => {
+  const token = String(request.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  if (!validAdminSession(token)) return response.status(401).json({ error: 'Administrator session expired.' });
+  const account = accounts.get(request.params.id);
+  return account ? response.json({ account: adminAccountDetails(account) }) : response.status(404).json({ error: 'Account not found.' });
+});
+app.post('/api/admin/logout', (request, response) => {
+  const token = String(request.get('authorization') || '').replace(/^Bearer\s+/i, '');
+  adminSessions.delete(tokenHash(token));
+  return response.json({ ok: true });
+});
+if (/^\d{15}$/.test(process.env.ADMIN_PATH || '')) app.get(`/${process.env.ADMIN_PATH}`, (_request, response) => response.sendFile(path.join(__dirname, 'index.html')));
+app.get(['/join', '/join/:code', '/join/:code/:key', '/moderator', '/moderator/:code/:key', '/villages', '/account'], (_request, response) => response.sendFile(path.join(__dirname, 'index.html')));
 
 io.on('connection', (socket) => {
-  socket.on('room:create', acked((_payload, ack) => {
+  socket.on('room:create', acked((payload, ack) => {
     const code = newCode();
+    const account = accountFromToken(payload.accountToken);
     const hostToken = randomToken();
+    const hostKey = shortKey(10);
     const question = QUESTIONS[crypto.randomInt(QUESTIONS.length)];
     const nightQuestion = QUESTIONS.filter((entry) => entry !== question)[crypto.randomInt(QUESTIONS.length - 1)];
     const roles = Object.fromEntries(ROLES.map((role) => [role, 0]));
     roles.Werewolf = 1;
     roles.Seer = 1;
     roles.Villager = 2;
-    const room = { code, hostTokenHash: tokenHash(hostToken), players: [], roles, stage: 'lobby', question, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
+    const room = { code, hostTokenHash: tokenHash(hostToken), hostKey, hostAccountId: account?.id || null, players: [], roles, artifactPool: ARTIFACTS.filter((artifact) => !UNAVAILABLE_ARTIFACTS.has(artifact)).slice(0, 3), stage: 'lobby', question, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
     rooms.set(code, room);
     persist();
-    sendSnapshot(socket, room, { code, kind: 'host' }, () => ack?.({ room: snapshot(room, { code, kind: 'host' }), token: hostToken }));
+    if (account) recordAccountActivity(account.id, 'Moderator room created');
+    sendSnapshot(socket, room, { code, kind: 'host' }, () => ack?.({ room: snapshot(room, { code, kind: 'host' }), token: hostToken, hostKey }));
   }));
 
   socket.on('room:join', acked((payload, ack) => {
     const room = rooms.get(String(payload.code || '').trim().toUpperCase());
     const name = String(payload.name || '').trim().slice(0, 18);
     const icon = String(payload.icon || '');
-    if (!room || room.stage !== 'lobby') throw new Error('No open lobby found with that code.');
+    const playerKey = normalizeKey(payload.playerKey || payload.key || '');
+    const account = accountFromToken(payload.accountToken);
+    if (!/^\d{6}$/.test(String(payload.code || '')) || !room || room.stage !== 'lobby') throw new Error('No open lobby found with that six-digit code.');
+    const existingPlayer = playerKey ? room.players.find((player) => normalizeKey(player.key) === playerKey) : undefined;
+    if (existingPlayer) {
+      existingPlayer.connected = true;
+      existingPlayer.socketId = socket.id;
+      if (account) existingPlayer.accountId = account.id;
+      existingPlayer.name = existingPlayer.name || name || existingPlayer.name;
+      updateRoom(room);
+      if (account) recordAccountActivity(account.id, 'Player seat rejoined');
+      sendSnapshot(socket, room, { code: room.code, kind: 'player', playerId: existingPlayer.id }, () => ack?.({ room: snapshot(room, { code: room.code, kind: 'player', playerId: existingPlayer.id }), token: existingPlayer.key, playerKey: existingPlayer.key }));
+      return;
+    }
     if (!name) throw new Error('Enter a player name.');
-    if (room.players.length >= 12) throw new Error('This room is full.');
+    if (room.players.length >= 24) throw new Error('This room is full.');
     if (!ICONS.includes(icon) || room.players.some((player) => player.icon === icon)) throw new Error('Choose an available icon.');
     const token = randomToken();
-    const player = { id: crypto.randomUUID(), tokenHash: tokenHash(token), name, icon, connected: true, socketId: socket.id };
+    if (account && !account.icons.includes(icon)) throw new Error('That icon is not in your collection yet.');
+    const player = { id: crypto.randomUUID(), tokenHash: tokenHash(token), key: shortKey(8), name, icon, accountId: account?.id || null, connected: true, socketId: socket.id };
     room.players.push(player);
     const fixedCards = roleCount(room) - room.roles.Villager;
     room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
     updateRoom(room);
-    sendSnapshot(socket, room, { code: room.code, kind: 'player', playerId: player.id }, () => ack?.({ room: snapshot(room, { code: room.code, kind: 'player', playerId: player.id }), token }));
+    if (account) recordAccountActivity(account.id, 'Player seat joined', name);
+    sendSnapshot(socket, room, { code: room.code, kind: 'player', playerId: player.id }, () => ack?.({ room: snapshot(room, { code: room.code, kind: 'player', playerId: player.id }), token, playerKey: player.key }));
+  }));
+
+  socket.on('room:preview', acked((payload, ack) => {
+    const room = rooms.get(String(payload.code || '').trim());
+    if (!/^\d{6}$/.test(String(payload.code || '')) || !room || room.stage !== 'lobby') throw new Error('No open lobby found with that six-digit code.');
+    ack?.({ preview: { code: room.code, players: room.players.map(({ name, icon }) => ({ name, icon })) } });
+  }));
+
+  socket.on('player:change-icon', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    if (room.stage !== 'lobby') throw new Error('Icons are locked after the cards are dealt.');
+    const account = accounts.get(player.accountId);
+    if (account && !account.icons.includes(payload.icon)) throw new Error('That icon is not in your collection yet.');
+    if (!ICONS.includes(payload.icon) || room.players.some((entry) => entry.id !== player.id && entry.icon === payload.icon)) throw new Error('That icon is already in use. Choose another.');
+    player.icon = payload.icon;
+    updateRoom(room);
+    if (account) recordAccountActivity(account.id, 'Player icon changed');
   }));
 
   socket.on('room:resume', acked((payload, ack) => {
     const { room, session } = authorize(socket, payload.code, payload.token, payload.kind);
+    const account = accountFromToken(payload.accountToken);
+    if (account) {
+      if (session.kind === 'host') {
+        if (room.hostAccountId && room.hostAccountId !== account.id) throw new Error('This moderator room belongs to another account.');
+        room.hostAccountId = account.id;
+      } else {
+        const player = playerById(room, session.playerId);
+        if (player.accountId && player.accountId !== account.id) throw new Error('This player seat belongs to another account.');
+        player.accountId = account.id;
+        if (!account.icons.includes(player.icon)) {
+          account.icons.push(player.icon);
+          persistAccounts();
+        }
+      }
+      const savedVillage = savedVillages.get(room.code);
+      if (session.kind === 'host' && savedVillage && !savedVillage.ownerAccountId) {
+        savedVillage.ownerAccountId = account.id;
+        persistSavedVillages();
+      }
+      recordAccountActivity(account.id, session.kind === 'host' ? 'Moderator room resumed' : 'Player seat resumed');
+    }
     if (session.kind === 'host') room.hostConnected = true;
     updateRoom(room);
     sendSnapshot(socket, room, session, ack);
@@ -284,6 +843,24 @@ io.on('connection', (socket) => {
     }
   }));
 
+  socket.on('host:kick-player', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('Players can only be removed from the lobby.');
+    const player = playerById(room, String(payload.playerId || ''));
+    if (!player) throw new Error('Player not found in this room.');
+    const playerId = player.id;
+    room.players = room.players.filter((entry) => entry.id !== playerId);
+    const fixedCards = roleCount(room) - room.roles.Villager;
+    room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
+    for (const client of io.sockets.sockets.values()) {
+      if (client.data.session?.code !== room.code || client.data.session?.playerId !== playerId) continue;
+      client.emit('room:kicked');
+      client.leave(room.code);
+      delete client.data.session;
+    }
+    updateRoom(room);
+  }));
+
   socket.on('host:deck', acked((payload) => {
     const room = requireHost(socket);
     if (room.stage !== 'lobby') throw new Error('The role deck is locked after the game starts.');
@@ -303,91 +880,170 @@ io.on('connection', (socket) => {
     updateRoom(room);
   }));
 
+  socket.on('host:artifact-pool', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('Artifacts are locked after the game starts.');
+    const selected = [...new Set(payload.artifacts || [])];
+    if (selected.some((artifact) => !ARTIFACTS.includes(artifact) || UNAVAILABLE_ARTIFACTS.has(artifact))) throw new Error('Choose only available artifacts.');
+    if (room.roles.Curator > 0 && selected.length < 3) throw new Error('Curator needs at least three selected artifacts.');
+    room.artifactPool = selected;
+    updateRoom(room);
+  }));
+
   socket.on('host:start', acked(() => {
     const room = requireHost(socket);
     if (room.stage !== 'lobby') throw new Error('This game has already started.');
-    if (room.players.length < 3 || room.players.length > 12) throw new Error('At least 3 players are needed.');
-    if (roleCount(room) !== room.players.length + 3) throw new Error('Choose exactly one card per player, plus three center cards.');
-    const deck = shuffle(ROLES.flatMap((role) => Array(room.roles[role]).fill(role)));
-    room.players.forEach((player, index) => Object.assign(player, { card: deck[index], startCard: deck[index], events: [], setupTarget: null, effectiveRole: null, nightAnswer: null }));
-    room.center = deck.slice(room.players.length);
+    const activePlayers = room.players.filter((player) => player.connected);
+    if (activePlayers.length < 3 || activePlayers.length > 12) throw new Error('At least 3 online players are needed, and no more than 12 can play.');
+    if (roleCount(room) !== activePlayers.length + 3) throw new Error('Choose exactly one card per online player, plus three center cards.');
+    if (room.roles.Curator > 0 && room.artifactPool.length < 3) throw new Error('Select at least three available artifacts for the Curator.');
+    const deck = shuffle(ROLES.flatMap((role) => Array(room.roles[role]).fill(role)).slice(0, activePlayers.length + 3));
+    activePlayers.forEach((player, index) => Object.assign(player, { card: deck[index], startCard: deck[index], events: [], seenCards: [], setupTarget: null, effectiveRole: null, artifactRole: null, transformedRole: null, artifactName: null, artifact: false, shielded: false, nightAnswer: null }));
+    room.players = activePlayers;
+    room.center = deck.slice(activePlayers.length);
     room.setupIndex = 0;
-    room.stage = 'setup';
+    room.stage = 'roles';
+    room.roleReady = {};
+    room.shields = {};
+    room.publicEvents = [];
     updateRoom(room);
   }));
 
   socket.on('player:setup', acked((payload) => {
     const { room, player } = requirePlayer(socket);
-    validatePlayerTurn(room, player.id, 'setup');
-    if (room.players[room.setupIndex]?.id !== player.id) throw new Error('Wait for your setup turn.');
+    if (room.stage !== 'setup') throw new Error('Setup is not open now.');
     const target = playerById(room, payload.targetId);
     if (!target || target.id === player.id) throw new Error('Choose another player.');
+    if (target.shielded && player.startCard === 'Doppelganger') throw new Error('That card is shielded from being viewed.');
     player.setupTarget = target.id;
-    if (player.startCard === 'Doppelganger') player.effectiveRole = target.startCard;
-    room.setupIndex += 1;
-    if (room.setupIndex >= room.players.length) startNight(room);
+    if (player.startCard === 'Doppelganger') {
+      player.effectiveRole = target.startCard;
+      recordCardView(player, target, target.startCard, 'Copied');
+    }
+    if (room.players.every((entry) => entry.setupTarget)) startNight(room);
+    updateRoom(room);
+  }));
+
+  socket.on('player:role-ready', acked(() => {
+    const { room, player } = requirePlayer(socket);
+    if (room.stage !== 'roles') throw new Error('The role reveal is not active now.');
+    room.roleReady ||= {};
+    room.roleReady[player.id] = true;
+    if (room.players.every((entry) => room.roleReady[entry.id])) {
+      if (room.players.some((entry) => entry.startCard === 'Sentinel')) room.stage = 'sentinel';
+      else if (room.players.some((entry) => entry.startCard === 'Doppelganger')) room.stage = 'setup';
+      else startNight(room);
+      room.setupIndex = 0;
+    }
+    updateRoom(room);
+  }));
+
+  socket.on('player:sentinel-shield', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    if (room.stage !== 'sentinel' || player.startCard !== 'Sentinel') throw new Error('You are not choosing a Sentinel shield now.');
+    room.shields ||= {};
+    if (room.shields[player.id]) throw new Error('Your shield is already placed.');
+    const target = playerById(room, payload.targetId);
+    if (!target) throw new Error('Choose a player to shield.');
+    target.shielded = true;
+    room.shields[player.id] = target.id;
+    const sentinels = room.players.filter((entry) => entry.startCard === 'Sentinel');
+    if (sentinels.every((entry) => room.shields[entry.id])) {
+      if (room.players.some((entry) => entry.startCard === 'Doppelganger')) room.stage = 'setup';
+      else startNight(room);
+    }
     updateRoom(room);
   }));
 
   socket.on('player:night-answer', acked((payload) => {
     const { room, player } = requirePlayer(socket);
-    const action = room.nightQueue[room.nightIndex];
-    if (room.stage !== 'night' || action?.actorId !== player.id || !roleQuestion(action, room)) throw new Error('There is no night question for you now.');
+    const action = room.nightQueue.find((entry) => entry.actorId === player.id);
+    if (room.stage !== 'night' || !action || !roleQuestion(action, room)) throw new Error('There is no night question for you now.');
+    if (room.nightActions[player.id]) throw new Error('Your night action is already locked.');
     const answer = playerById(room, payload.targetId);
     if (!answer || answer.id === player.id) throw new Error('Choose another player.');
     player.nightAnswer = answer.id;
-    player.events.push(`Night question: chose ${answer.name}.`);
-    if (action.role === 'Minion') {
-      const wolves = room.players.filter((entry) => effectiveRole(entry) === 'Werewolf');
-      player.events.push(wolves.length ? `The werewolves are: ${wolves.map((entry) => entry.name).join(', ')}.` : 'There are no werewolves in the village.');
-    }
-    if (action.role === 'Mason') {
-      const masons = room.players.filter((entry) => entry.id !== player.id && effectiveRole(entry) === 'Mason');
-      player.events.push(masons.length ? `Other Masons: ${masons.map((entry) => entry.name).join(', ')}.` : 'You saw no other Masons.');
-    }
-    advanceNight(room);
+    room.nightActions[player.id] = { targetId: answer.id };
+    if (Object.keys(room.nightActions).length === room.nightQueue.length) resolveNight(room);
     updateRoom(room);
   }));
 
   socket.on('player:night-action', acked((payload) => {
     const { room, player } = requirePlayer(socket);
-    const action = room.nightQueue[room.nightIndex];
-    if (room.stage !== 'night' || action?.actorId !== player.id) throw new Error('Wait for your night turn.');
+    const action = room.nightQueue.find((entry) => entry.actorId === player.id);
+    if (room.stage !== 'night' || !action) throw new Error('You have no night action to submit.');
+    if (room.nightActions[player.id]) throw new Error('Your night action is already locked.');
     const role = action.role;
     if (roleQuestion(action, room)) throw new Error('Answer your night question first.');
+    const data = {};
     if (role === 'Werewolf') {
       const wolves = room.players.filter((entry) => effectiveRole(entry) === 'Werewolf');
       if (wolves.length !== 1) throw new Error('Werewolves act together and do not peek at the center.');
       const index = Number(payload.centerIndex);
       if (!Number.isInteger(index) || index < 0 || index > 2) throw new Error('Choose a center card.');
-      player.events.push(`Looked at center card ${index + 1}: ${room.center[index]}.`);
+      data.centerIndex = index;
+    } else if (role === 'Mystic Wolf' || role === 'Alpha Wolf') {
+      const target = inspectablePlayer(room, payload.targetId, player.id);
+      if (!target) throw new Error('Choose another unshielded player.');
+      data.targetId = target.id;
     } else if (role === 'Seer') {
       if (payload.mode === 'player') {
-        const target = playerById(room, payload.targetId);
-        if (!target || target.id === player.id) throw new Error('Choose another player.');
-        player.events.push(`Saw ${target.name}’s card: ${target.card}.`);
+        const target = inspectablePlayer(room, payload.targetId, player.id);
+        if (!target) throw new Error('Choose another unshielded player.');
+        data.mode = 'player';
+        data.targetId = target.id;
       } else if (payload.mode === 'center') {
         const indices = [...new Set((payload.centerIndices || []).map(Number))];
         if (indices.length !== 2 || indices.some((index) => !Number.isInteger(index) || index < 0 || index > 2)) throw new Error('Choose two different center cards.');
-        player.events.push(`Saw center cards ${indices.map((index) => `#${index + 1} ${room.center[index]}`).join(' and ')}.`);
+        data.mode = 'center';
+        data.centerIndices = indices;
       } else throw new Error('Choose a player or two center cards.');
+    } else if (role === 'Apprentice Seer') {
+      const index = Number(payload.centerIndex);
+      if (!Number.isInteger(index) || index < 0 || index > 2) throw new Error('Choose a center card.');
+      data.centerIndex = index;
     } else if (role === 'Robber') {
-      const target = playerById(room, payload.targetId);
-      if (!target || target.id === player.id) throw new Error('Choose another player.');
-      [player.card, target.card] = [target.card, player.card];
-      player.events.push(`Swapped cards with ${target.name}. Your new card is ${player.card}.`);
+      if (payload.pass) data.pass = true;
+      else {
+        const target = inspectablePlayer(room, payload.targetId, player.id);
+        if (!target) throw new Error('Choose another unshielded player, or pass.');
+        data.targetId = target.id;
+      }
+    } else if (role === 'Witch') {
+      if (payload.pass) data.pass = true;
+      else {
+        const index = Number(payload.centerIndex);
+        const target = inspectablePlayer(room, payload.targetId, player.id, true);
+        if (!Number.isInteger(index) || index < 0 || index > 2 || !target) throw new Error('Choose a center card and an unshielded player card to exchange.');
+        data.centerIndex = index;
+        data.targetId = target.id;
+      }
+    } else if (role === 'Paranormal Investigator') {
+      if (payload.pass) { data.pass = true; room.nightActions[player.id] = { data }; if (Object.keys(room.nightActions).length === room.nightQueue.length) resolveNight(room); updateRoom(room); return; }
+      const ids = [...new Set(payload.targetIds || [])];
+      const targets = ids.map((id) => inspectablePlayer(room, id, player.id));
+      if (ids.length !== 2 || targets.some((target) => !target)) throw new Error('Choose two different unshielded players.');
+      data.targetIds = ids;
     } else if (role === 'Troublemaker') {
-      const targets = [...new Set(payload.targetIds || [])].map((id) => playerById(room, id));
-      if (targets.length !== 2 || targets.some((target) => !target || target.id === player.id)) throw new Error('Choose two different players other than yourself.');
-      [targets[0].card, targets[1].card] = [targets[1].card, targets[0].card];
-      player.events.push(`Swapped ${targets[0].name}’s and ${targets[1].name}’s cards.`);
+      if (payload.pass) { data.pass = true; room.nightActions[player.id] = { data }; if (Object.keys(room.nightActions).length === room.nightQueue.length) resolveNight(room); updateRoom(room); return; }
+      const ids = [...new Set(payload.targetIds || [])];
+      const targets = ids.map((id) => inspectablePlayer(room, id, player.id));
+      if (targets.length !== 2 || targets.some((target) => !target)) throw new Error('Choose two different unshielded players other than yourself.');
+      data.targetIds = ids;
+    } else if (role === 'Village Idiot') {
+      if (!['left', 'right'].includes(payload.direction)) throw new Error('Choose left or right.');
+      data.direction = payload.direction;
     } else if (role === 'Drunk') {
       const index = Number(payload.centerIndex);
       if (!Number.isInteger(index) || index < 0 || index > 2) throw new Error('Choose a center card.');
-      [player.card, room.center[index]] = [room.center[index], player.card];
-      player.events.push('Swapped your card with a center card. You do not know which role you now hold.');
+      data.centerIndex = index;
+    } else if (role === 'Revealer' || role === 'Curator') {
+      const target = inspectablePlayer(room, payload.targetId, player.id);
+      if (!target) throw new Error('Choose another unshielded player.');
+      data.targetId = target.id;
     } else throw new Error('This role does not have a night action.');
-    advanceNight(room);
+    room.nightActions[player.id] = { data };
+    if (Object.keys(room.nightActions).length === room.nightQueue.length) resolveNight(room);
     updateRoom(room);
   }));
 
@@ -449,14 +1105,56 @@ io.on('connection', (socket) => {
     const room = requireHost(socket);
     if (room.stage !== 'results') throw new Error('This game has not finished.');
     for (const player of room.players) {
-      for (const key of ['card', 'startCard', 'events', 'setupTarget', 'effectiveRole', 'nightAnswer', 'voteTarget']) delete player[key];
+      for (const key of ['card', 'startCard', 'events', 'seenCards', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole']) delete player[key];
     }
-    for (const key of ['center', 'nightQueue', 'nightIndex', 'setupIndex', 'infoDone', 'votes', 'voteCounts', 'deadIds', 'winner']) delete room[key];
+    for (const key of ['center', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'votes', 'voteCounts', 'deadIds', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
     const question = QUESTIONS[crypto.randomInt(QUESTIONS.length)];
     room.question = question;
     room.nightQuestion = QUESTIONS.filter((entry) => entry !== question)[crypto.randomInt(QUESTIONS.length - 1)];
     room.stage = 'lobby';
     updateRoom(room);
+  }));
+
+  socket.on('host:stop-game', acked(() => {
+    const room = requireHost(socket);
+    if (room.stage === 'lobby') throw new Error('The lobby is already open.');
+    for (const player of room.players) {
+      for (const key of ['card', 'startCard', 'events', 'seenCards', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole']) delete player[key];
+    }
+    for (const key of ['center', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'votes', 'voteCounts', 'deadIds', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
+    room.discussionSeconds = 0;
+    room.timerRunning = false;
+    stopTimer(room.code);
+    room.stage = 'lobby';
+    updateRoom(room);
+  }));
+
+  socket.on('host:save-village', acked((_payload, ack) => {
+    const room = requireHost(socket);
+    if (!room.hostAccountId) throw new Error('Sign in to an account before saving this village.');
+    const entry = {
+      id: room.code,
+      code: room.code,
+      ownerAccountId: room.hostAccountId || null,
+      savedAt: timestamp(),
+      hostKey: room.hostKey,
+      roles: { ...room.roles },
+      players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, key: player.key, connected: player.connected })),
+      artifactPool: [...(room.artifactPool || [])],
+      question: room.question,
+      nightQuestion: room.nightQuestion,
+      stage: room.stage === 'lobby' ? 'lobby' : 'paused'
+    };
+    savedVillages.set(entry.id, entry);
+    persistSavedVillages();
+    recordAccountActivity(room.hostAccountId, 'Village saved', room.code);
+    ack?.({ villages: [...savedVillages.values()] });
+  }));
+
+  socket.on('host:get-saved-villages', acked((_payload, ack) => {
+    const room = requireHost(socket);
+    const villages = [...savedVillages.values()].filter((entry) => room.hostAccountId && entry.ownerAccountId === room.hostAccountId).map((entry) => ({ id: entry.id, code: entry.code, savedAt: entry.savedAt, players: entry.players.length, roles: entry.roles }));
+    ack?.({ villages });
   }));
 
   socket.on('disconnect', () => {
