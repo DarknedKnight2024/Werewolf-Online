@@ -1,6 +1,17 @@
 const ROLES = [
   ['Sentinel', '#3f8b75', '🛡️', 'During setup, shield one player’s card from being seen or switched.'],
-  ['Doppelganger', '#4167d5', '🪞', 'Look at one player’s card. Copy that role and do its action first.'],
+  ['Copycat', '#397b9b', '🎭', 'During setup, copy a center card. Perform its action in its normal phase.'],
+  ['Doppelganger', '#4167d5', '🪞', 'During setup, copy one player’s card. Perform its action in its normal phase.'],
+  ['Vampire', '#a33e5b', '🧛', 'Join the other Vampires to place one Mark of Vampire on a non-vampire.'],
+  ['Master', '#8e3e69', '🦇', 'Join the other Vampires to place one Mark of Vampire on a non-vampire.'],
+  ['Count', '#66448f', '🩸', 'Join the Vampires, then place Mark of Fear on one player.'],
+  ['Renfield', '#765d83', '🦇', 'See the Vampires and Mark of Vampire, then take Mark of the Bat. You are on their team.'],
+  ['Diseased', '#71834a', '🦠', 'Place Mark of Disease on the player to your left or right.'],
+  ['Cupid', '#d36b8e', '💘', 'Place Marks of Love on two players. If one dies, so does the other.'],
+  ['Instigator', '#bc683f', '🗡️', 'Place Mark of Traitor on one player.'],
+  ['Priest', '#4f8d83', '🕯️', 'Place Mark of Clarity on yourself and one other player.'],
+  ['Assassin', '#a34c3f', '🗡️', 'Mark one player. You win if that player is voted out.'],
+  ['Apprentice Assassin', '#bd6e54', '🗡️', 'Your apprentice ability is not active yet.'],
   ['Werewolf', '#202b28', '🐺', 'Find the pack. If you are the only awake wolf, peek at one center card.'],
   ['Mystic Wolf', '#6949a5', '🔮', 'Wake with the pack, then look at one unshielded player’s card.'],
   ['Alpha Wolf', '#9b4b3c', '🐺', 'Wake with the pack, then exchange a player’s card with the hidden Wolf card.'],
@@ -9,11 +20,14 @@ const ROLES = [
   ['Mason', '#45988c', '🧱', 'Find the other Masons, if there are any.'],
   ['Seer', '#4c77d7', '🔮', 'Look at one unshielded player’s card or two center cards.'],
   ['Apprentice Seer', '#6d8bd8', '🌟', 'Look at one card in the center.'],
+  ['Marksman', '#358c94', '🏹', 'During information, inspect one player’s mark and another player’s role.'],
   ['Robber', '#d09134', '🦝', 'Optionally swap with an unshielded player and look at your new card.'],
   ['Witch', '#8a578e', '🧙', 'Optionally look at a center card and exchange it with an unshielded player card.'],
   ['Paranormal Investigator', '#536ea7', '🕵️', 'Look at two unshielded player cards in order, stopping at a Wolf or Tanner.'],
+  ['Pickpocket', '#ba8a39', '🤏', 'Optionally exchange your mark with another player’s mark and see your new mark.'],
   ['Troublemaker', '#e27859', '🔀', 'Swap two other unshielded players’ cards.'],
   ['Village Idiot', '#b3783f', '🌀', 'Move the other unshielded players’ cards one seat left or right.'],
+  ['Gremlin', '#4c8f78', '👺', 'Swap either two other players’ marks or their cards, but not both.'],
   ['Drunk', '#ba668b', '🍷', 'Swap your card with one center card without looking at it.'],
   ['Insomniac', '#5599b5', '🌙', 'Look at your card at the end of the night, unless it is shielded.'],
   ['Revealer', '#66836d', '🪞', 'Reveal one unshielded player’s card. Wolves and Tanners stay private.'],
@@ -38,7 +52,8 @@ const ARTIFACTS = [
   ['Bow of the Hunter', '🏹', true], ['Sword of the Bodyguard', '🛡️', true], ['Cloak of the Prince', '👑', true],
   ['Mist of the Vampire', '🧛', false], ['Dagger of the Traitor', '🗡️', false], ['Alien Artifact', '👽', false],
 ];
-const PHASES = ['Lobby', 'Roles', 'Sentinel', 'Setup', 'Night', 'Information', 'Discuss', 'Vote', 'Reveal'];
+const PHASES = ['Lobby', 'Roles', 'Sentinel', 'Setup', 'Dusk', 'Mark', 'Night', 'Information', 'Discuss', 'Vote', 'Reveal'];
+const RARITY_COLORS = { Common: '#71816f', Uncommon: '#3f8d73', Rare: '#397eb4', 'Super Rare': '#7655ad', Epic: '#bd7040', Ultra: '#bd9a36', Legendary: '#c34d54', Mythical: '#d05b9d', Ancient: '#6e5b50' };
 const app = document.querySelector('#app');
 const socket = io();
 let room = null;
@@ -56,6 +71,9 @@ let selectedCenter = [];
 let seerMode = 'player';
 let changingIcon = false;
 let villageDirection = 'left';
+let gremlinMode = 'cards';
+let infoMarkTarget = '';
+let infoRoleTarget = '';
 let toastTimer;
 let adminChallenge = null;
 let adminToken = '';
@@ -101,11 +119,19 @@ function clearSession() {
   localStorage.removeItem('nightshift-session'); session = null; room = null; pendingCode = '';
   history.replaceState({}, '', location.pathname); render();
 }
+function updatePresence(active = !document.hidden) {
+  if (!session || session.kind !== 'player' || !socket.connected) return;
+  emit('player:presence', { active }).catch(() => {});
+}
 function connectSession() {
   if (!session || !socket.connected) return;
+  updatePresence(true);
   emit('room:resume', { ...session, accountToken }).then(({ room: snapshot }) => { room = snapshot; render(); }).catch(() => clearSession());
 }
 socket.on('connect', connectSession);
+window.addEventListener('focus', () => updatePresence(true));
+window.addEventListener('blur', () => updatePresence(false));
+document.addEventListener('visibilitychange', () => updatePresence(!document.hidden));
 socket.on('disconnect', () => { if (room) render(); });
 socket.on('room:update', (snapshot) => { room = snapshot; render(); });
 socket.on('room:kicked', () => {
@@ -118,7 +144,7 @@ function header() {
   const right = room ? `<span class="top-note">${room.viewer.kind === 'host' ? 'Moderator' : `${esc(room.viewer.name)} · ${room.code}`}</span>` : '<span class="top-note">One night. One village. No alibis.</span>';
   const routeLink = !room ? location.pathname === '/moderator' ? '<a class="top-note route-link" href="/join">Player join</a>' : '<a class="top-note route-link" href="/moderator">Moderator desk</a>' : '';
   const accountLink = /^\d{15}$/.test(location.pathname.slice(1)) ? '' : `<a class="top-note route-link" href="/account">${account ? esc(account.name) : 'Sign in'}</a>`;
-  return `<header class="topbar"><a class="brand" href="${room?.viewer.kind === 'host' ? '/moderator' : '/join'}" data-action="home"><span class="brand-mark">✳</span><span class="brand-name">night<span>shift</span></span></a>${routeLink}${accountLink}${right}</header>`;
+  return `<header class="topbar"><a class="brand" href="${room?.viewer.kind === 'host' ? '/moderator' : '/join'}" data-action="home"><span class="brand-mark">✳</span><span class="brand-name">Werewolf<span>Online</span></span></a>${routeLink}${accountLink}${right}</header>`;
 }
 function parseRoute() {
   const match = location.pathname.match(/^\/(join|moderator)\/(\d{6})(?:\/([A-Z0-9]+))?\/?$/);
@@ -170,20 +196,10 @@ function renderHome() {
 }
 function renderAccount() {
   if (!account) return `<section class="intro"><div class="intro-copy"><div class="eyebrow">Nightshift account</div><h1>${accountMode === 'signup' ? 'Join the village.' : 'Your progress, anywhere.'}</h1><p>Keep your player seats, icon collection, coins, and saved villages connected across devices.</p></div><div class="night-stamp" aria-hidden="true">✧</div></section><section class="panel join-panel"><div class="button-row"><button class="btn ${accountMode === 'login' ? '' : 'btn-quiet'}" data-action="account-mode" data-mode="login">Sign in</button><button class="btn ${accountMode === 'signup' ? '' : 'btn-quiet'}" data-action="account-mode" data-mode="signup">Sign up</button></div><form class="account-form" data-form="account-auth">${accountMode === 'signup' ? '<div class="field"><label for="account-name">DISPLAY NAME</label><input class="input" id="account-name" name="name" maxlength="32" autocomplete="name" placeholder="Your name"></div>' : ''}<div class="field"><label for="account-email">EMAIL</label><input class="input" id="account-email" name="email" type="email" maxlength="254" autocomplete="email" required></div><div class="field"><label for="account-password">PASSWORD</label><input class="input" id="account-password" name="password" type="password" minlength="12" maxlength="128" autocomplete="${accountMode === 'signup' ? 'new-password' : 'current-password'}" required><small>Use at least 12 characters.</small></div><button class="btn" type="submit">${accountMode === 'signup' ? 'Create account' : 'Sign in'} →</button></form><p class="muted-small">Password reset by email is not available until an email provider is configured. Use a password manager and keep your password safe.</p></section>`;
-  const rarityOrder = ['Common', 'Uncommon', 'Rare', 'Super Rare', 'Epic', 'Ultra', 'Legendary', 'Mythical', 'Ancient'];
-  const themes = [...new Set(accountCatalog.map((item) => item.theme))];
-  const shop = themes.map((theme) => {
-    const themeItems = accountCatalog.filter((item) => item.theme === theme);
-    const tiers = rarityOrder.map((rarity) => {
-      const items = themeItems.filter((item) => item.rarity === rarity);
-      if (!items.length) return '';
-      return `<section class="icon-shop-tier"><h4>${rarity}</h4><div class="icon-shop-grid">${items.map((item) => {
-        const owned = account.icons.includes(item.icon);
-        return `<div class="icon-shop-item"><span class="shop-icon">${item.icon}</span>${owned ? '<span class="host-tag">Owned</span>' : item.cost === null ? '<span class="note">Event only</span>' : `<button class="btn btn-quiet" data-action="purchase-icon" data-icon="${item.icon}">${item.cost} coins</button>`}</div>`;
-      }).join('')}</div></section>`;
-    }).join('');
-    return `<section class="icon-shop-group"><h3>${esc(theme)}</h3>${tiers}</section>`;
-  }).join('');
+  const shop = `<div class="icon-shop-grid">${accountCatalog.map((item) => {
+    const owned = account.icons.includes(item.icon);
+    return `<div class="icon-shop-item"><span class="shop-icon">${item.icon}<small class="shop-rarity" style="--rarity-color:${RARITY_COLORS[item.rarity] || '#71816f'}">${esc(item.rarity)}</small></span><small class="shop-theme">${esc(item.theme)}</small>${owned ? '<span class="host-tag">Owned</span>' : item.cost === null ? '<span class="note">Event only</span>' : `<button class="btn btn-quiet" data-action="purchase-icon" data-icon="${item.icon}">${item.cost} coins</button>`}</div>`;
+  }).join('')}</div>`;
   return `<section class="intro"><div class="intro-copy"><div class="eyebrow">Your account</div><h1>${esc(account.name)}.</h1><p>${esc(account.email)} · Your account travels with you.</p></div><div class="coin-balance"><span>Coins</span><strong>✦ ${account.coins}</strong></div></section><section class="account-stats"><div><span>Games</span><strong>${account.stats.games}</strong></div><div><span>Wins</span><strong>${account.stats.wins}</strong></div><div><span>Icons</span><strong>${account.icons.length}</strong></div><div><span>Villages</span><strong>${account.villages.length}</strong></div></section><section class="panel account-section"><div class="section-head"><h2>Continue playing</h2><span class="note">Player seats and villages are private to your account</span></div>${account.linkedPlayers.length ? `<div class="player-list">${account.linkedPlayers.map((player) => `<div class="player-row"><span class="player-icon">✦</span><span class="player-name">Room ${esc(player.code)} · ${esc(player.name)}</span><span class="host-tag">${esc(player.stage)}</span><button class="btn btn-quiet" data-action="resume-player" data-code="${esc(player.code)}" data-key="${esc(player.key)}">Resume</button></div>`).join('')}</div>` : '<div class="empty">Player seats you join while signed in will appear here.</div>'}</section><section class="panel account-section"><div class="section-head"><h2>Your villages</h2><button class="btn btn-quiet" data-action="open-villages">Open villages</button></div>${account.villages.length ? `<div class="player-list">${account.villages.map((village) => `<div class="player-row"><span class="player-icon">🏡</span><span class="player-name">${esc(village.code)} · ${village.players} players</span><button class="btn btn-quiet" data-action="resume-village" data-code="${esc(village.code)}">Resume</button></div>`).join('')}</div>` : '<div class="empty">Villages you save while signed in will appear here.</div>'}</section><section class="panel account-section"><div class="section-head"><h2>Icon collection</h2><span class="count-label">${account.coins} coins</span></div><p>Finish a game to earn 25 coins. Win for a 15-coin bonus.</p>${shop}</section><div class="action-footer"><button class="btn btn-quiet" data-action="account-logout">Sign out</button></div>`;
 }
 function renderAdminDetails() {
@@ -231,7 +247,7 @@ function renderLobby() {
   return `<div class="room-head"><div><div class="eyebrow">Moderator lobby · You are not a player</div><h1>Build your village.</h1><p>${room.host.cardsNeeded - 3} players · choose exactly ${room.host.cardsNeeded} cards, including three center cards.</p></div><div class="code-box"><div><small>Room code</small><strong>${room.code}</strong></div><button class="btn btn-quiet" data-action="copy-link" aria-label="Copy invite link">▣</button></div></div><div class="room-layout"><section class="section-panel panel"><div class="section-head"><h2>Players</h2><span class="count-label">${room.players.length} / 12</span></div>${playerList()}<button class="btn btn-quiet" style="margin-top:15px;width:100%" data-action="copy-link">Copy invite link</button><div class="lobby-foot">Players join from their own devices. Your moderator screen never receives a player card.</div></section><aside class="deck-panel panel"><div class="eyebrow">The cards</div><h2>Choose your roles.</h2><p class="deck-help">One card per player, plus three in the center. The deck order is the night action order.</p><div class="deck-total"><span>Cards selected</span><strong>${room.host.totalCards} / ${room.host.cardsNeeded}</strong></div><div class="role-list">${ROLES.map(([name, color, icon]) => `<div class="role-row"><span class="role-title"><i class="role-dot" style="--role-color:${color}"></i><span>${icon}</span>${name}</span><button data-action="role-change" data-role="${name}" data-delta="-1" aria-label="Remove ${name}">−</button><span class="role-qty">${room.roles[name]}</span><button data-action="role-change" data-role="${name}" data-delta="1" aria-label="Add ${name}">+</button></div>`).join('')}</div>${renderArtifactPool()}<div class="deck-status ${valid ? '' : 'invalid'}">${valid ? 'Deck is ready to deal.' : room.host.totalCards < room.host.cardsNeeded ? `${room.host.cardsNeeded - room.host.totalCards} more cards needed.` : room.host.totalCards > room.host.cardsNeeded ? 'Remove cards to match the player count.' : 'At least 3 players are needed.'}</div><div class="room-actions"><button class="btn" data-action="start-game" ${valid ? '' : 'disabled'}>Deal the cards →</button><button class="btn btn-quiet" data-action="leave">Leave room</button></div></aside></div>`;
 }
 function phaseIndex() {
-  return ({ lobby: -1, roles: 1, sentinel: 2, setup: 3, night: 4, information: 5, discussion: 6, voting: 7, results: 8 })[room.stage] ?? 0;
+  return ({ lobby: -1, roles: 1, sentinel: 2, setup: 3, dusk: 4, mark: 5, night: 6, information: 7, discussion: 8, voting: 9, results: 10 })[room.stage] ?? 0;
 }
 function phaseBar() {
   const current = phaseIndex();
@@ -262,14 +278,52 @@ function renderSetup() {
   const own = room.own;
   const active = !own.setupTarget;
   const doppel = own.startCard === 'Doppelganger';
-  const completed = room.players.filter((player) => player.setupTarget).length;
-  return `<div class="eyebrow">Phase 03 · Setup</div><h2>${doppel ? 'Choose a card to copy.' : 'One last question.'}</h2><p>${doppel ? 'Look at one player’s card. You become that role and perform its night action first.' : 'Choose a player for the group question. Keep your choice to yourself.'}</p><div class="result-banner role-private"><span style="font-size:26px">✦</span><div><strong>Your card: ${esc(own.card)}</strong><span>${doppel && own.effectiveRole ? `Copied role: ${esc(own.effectiveRole)}` : 'Only you can see this.'}</span></div></div>${doppel ? '' : `<div class="question-prompt">${esc(room.question)}</div>`}<div class="action-box"><h3>${active ? 'Your choice' : 'Locked in'}</h3>${active ? playerChoices([room.viewer.playerId], 1, 'select-player', doppel) : `<p class="note">You already chose. ${completed} of ${room.players.length} players are ready.</p>`}<div class="action-footer"><span class="note">${doppel ? 'Your copied role stays private.' : `${completed} of ${room.players.length} ready`}</span>${active ? `<button class="btn" data-action="submit-setup" ${!selectedIds.length ? 'disabled' : ''}>Lock answer →</button>` : ''}</div></div>`;
+  const copycat = own.startCard === 'Copycat';
+  if (!doppel && !copycat) return `<div class="eyebrow">Phase 03 · Setup</div><h2>Copycat setup.</h2><p>A Copycat is choosing a center card. Your role stays private.</p><div class="result-banner role-private"><span style="font-size:26px">✦</span><div><strong>Your card: ${esc(own.card)}</strong><span>Only you can see this.</span></div></div>`;
+  const selected = active ? copycat ? centerChoices(1) : playerChoices([room.viewer.playerId], 1, 'select-player', true) : `<p class="note">Your choice is locked in.</p>`;
+  return `<div class="eyebrow">Phase 03 · Setup</div><h2>${copycat ? 'Choose a center card to copy.' : 'Choose a player to copy.'}</h2><p>${copycat ? 'Look at one center card. You become that role and act in its normal phase.' : 'Look at one player’s card. You become that role and act in its normal phase.'}</p><div class="result-banner role-private"><span style="font-size:26px">✦</span><div><strong>Your card: ${esc(own.card)}</strong><span>${own.effectiveRole ? `Copied role: ${esc(own.effectiveRole)}` : 'Only you can see this.'}</span></div></div><div class="action-box"><h3>${active ? 'Your choice' : 'Locked in'}</h3>${selected}<div class="action-footer"><span class="note">Your copied role stays private.</span>${active ? `<button class="btn" data-action="${copycat ? 'submit-copycat' : 'submit-setup'}" ${(copycat ? selectedCenter.length !== 1 : selectedIds.length !== 1) ? 'disabled' : ''}>Lock choice →</button>` : ''}</div></div>`;
+}
+function renderDusk() {
+  const action = room.action;
+  if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Dusk marks are being placed.</h2><p>Roles resolve in order. Mark choices stay hidden until each player sees their own mark.</p>${playerList()}`;
+  if (!action?.role) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Dusk actions are underway.</h2><p>You have no Dusk action. Keep your card private while the marked players finish.</p>`;
+  if (action.submitted) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Action locked.</h2><p>Your choice is private. Dusk actions resolve in role order.</p><div class="result-banner"><span>✓</span><div><strong>${esc(action.copied ? `Copycat → ${action.role}` : action.role)}</strong><span>Waiting for the other Dusk actions.</span></div></div>`;
+  let choices = '';
+  let title = '';
+  if (action.role === 'Vampire') {
+    title = 'Choose one non-vampire for Mark of Vampire.';
+    choices = playerChoices([], 1, 'dusk-select');
+  } else if (action.role === 'Count' || action.role === 'Instigator' || action.role === 'Assassin') {
+    title = action.role === 'Count' ? 'Place Mark of Fear on one player.' : action.role === 'Instigator' ? 'Place Mark of Traitor on one player.' : 'Place Mark of Assassin on one player.';
+    choices = playerChoices([], 1, 'dusk-select');
+  } else if (action.role === 'Diseased') {
+    const position = room.players.findIndex((player) => player.id === room.viewer.playerId);
+    const neighbors = [room.players[(position + 1) % room.players.length], room.players[(position + room.players.length - 1) % room.players.length]];
+    title = 'Place Mark of Disease on your left or right neighbor.';
+    choices = `<div class="choice-grid">${neighbors.map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="dusk-select" data-id="${player.id}"><span class="player-icon">${player.icon}</span>${esc(player.name)}</button>`).join('')}</div>`;
+  } else if (action.role === 'Cupid') {
+    title = 'Choose two players to receive Mark of Love.';
+    choices = `<div class="choice-grid">${room.players.map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="dusk-select" data-id="${player.id}" data-max="2" ${!selectedIds.includes(player.id) && selectedIds.length >= 2 ? 'disabled' : ''}><span class="player-icon">${player.icon}</span>${esc(player.name)}</button>`).join('')}</div>`;
+  } else if (action.role === 'Priest') {
+    title = 'Mark yourself and one other player with Clarity.';
+    choices = playerChoices([room.viewer.playerId], 1, 'dusk-select');
+  } else {
+    title = 'See the vampire team and the Vampire mark, then take Mark of the Bat.';
+  }
+  return `<div class="eyebrow">Phase 04 · Dusk</div><h2>${esc(action.copied ? `Copycat → ${action.role}` : action.role)}.</h2><p>${esc(title)}</p><div class="action-box"><h3>${esc(action.role)} action</h3>${choices}<div class="action-footer"><span class="note">${action.shared ? 'Vampires act together. Only one mark is placed.' : 'Your mark is private until the Mark phase.'}</span><button class="btn" data-action="submit-dusk" ${action.role === 'Renfield' ? '' : action.role === 'Cupid' ? selectedIds.length !== 2 ? 'disabled' : '' : !selectedIds.length ? 'disabled' : ''}>${action.role === 'Renfield' ? 'Confirm' : 'Place mark'} →</button></div></div>`;
+}
+function renderMark() {
+  if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 05 · Mark</div><h2>Players are checking their marks.</h2><p>${room.markDone} of ${room.markCount} players are ready. Marks remain private to their holder.</p>${playerList()}`;
+  const own = room.own;
+  const mark = own.mark || 'Clarity';
+  const lover = own.lovers?.[0];
+  return `<div class="eyebrow">Phase 05 · Mark</div><h2>Your mark is ${esc(mark)}.</h2><p>You see your mark, not your role card. Keep it private, then hide it before Night.</p><div class="result-banner role-private"><span style="font-size:26px">${mark === 'Love' ? '♡' : mark === 'Vampire' ? '🦇' : mark === 'Fear' ? '☽' : '✦'}</span><div><strong>Mark of ${esc(mark)}</strong><span>${mark === 'Bat' ? 'You are not a vampire, but you are on the vampire team.' : mark === 'Love' ? lover ? `Your lover is ${lover.icon} ${esc(lover.name)}.` : 'Your lover will be revealed here.' : 'Only you can see this mark.'}</span></div></div>${lover ? `<div class="info-banner"><strong>Your lover</strong><span>${lover.icon} ${esc(lover.name)}</span></div>` : ''}<div class="action-footer"><span class="note">${room.markDone} of ${room.markCount} players ready</span><button class="btn" data-action="mark-done">Hide mark & continue →</button></div>`;
 }
 function renderNight() {
   const action = room.action;
-  if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 04 · Moderator</div><h2>Night actions are underway.</h2><p>Everyone acts at once on their own device. The server resolves actions in role order once all players are ready.</p><div class="empty">${room.host.nightDone} of ${room.players.length} players ready.</div>${playerList()}`;
-  if (!action) return `<div class="eyebrow">Phase 04 · Night</div><h2>Night actions are underway.</h2><p>You have no role action this night. The server resolves the cards after everyone is ready.</p><div class="empty">Keep your role private.</div>`;
-  if (action.submitted) return `<div class="eyebrow">Phase 04 · Night</div><h2>Action locked.</h2><p>Your choice is private. The server resolves actions in role order after the whole village is ready.</p><div class="result-banner"><span style="font-size:25px">✓</span><div><strong>${esc(action.copied ? `Doppelganger → ${action.role}` : action.role)}</strong><span>Your action is locked.</span></div></div>`;
+  if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 06 · Moderator</div><h2>Night actions are underway.</h2><p>Everyone acts at once on their own device. The server resolves actions in role order once all players are ready.</p>${playerList()}`;
+  if (!action) return `<div class="eyebrow">Phase 06 · Night</div><h2>Night actions are underway.</h2><p>You have no role action this night. The server resolves the cards after everyone is ready.</p><div class="empty">Keep your role private.</div>`;
+  if (action.submitted) return `<div class="eyebrow">Phase 06 · Night</div><h2>Action locked.</h2><p>Your choice is private. The server resolves actions in role order after the whole village is ready.</p><div class="result-banner"><span style="font-size:25px">✓</span><div><strong>${esc(action.copied ? `${room.own.startCard} → ${action.role}` : action.role)}</strong><span>Your action is locked.</span></div></div>`;
   const role = action.role;
   let controls = '';
   let intro = '';
@@ -289,6 +343,12 @@ function renderNight() {
   } else if (role === 'Apprentice Seer') {
     intro = '<p>Choose one of the three center cards.</p>';
     controls = `${centerChoices(1)}<div class="action-footer"><button class="btn" data-action="night-action" data-role="Apprentice Seer" ${selectedCenter.length !== 1 ? 'disabled' : ''}>Look at card →</button></div>`;
+  } else if (role === 'Pickpocket') {
+    intro = '<p>Optionally swap your mark with another player’s mark. You will see your new mark during Information.</p>';
+    controls = `${playerChoices([room.viewer.playerId], 1, 'select-player')}<div class="action-footer"><button class="btn btn-quiet" data-action="night-action" data-role="Pickpocket" data-pass="true">Do nothing</button><button class="btn" data-action="night-action" data-role="Pickpocket" ${selectedIds.length !== 1 ? 'disabled' : ''}>Swap marks →</button></div>`;
+  } else if (role === 'Gremlin') {
+    intro = '<p>Choose two other players, then switch either their marks or their cards. Cards protected by the Sentinel cannot be switched.</p>';
+    controls = `<div class="button-row"><button class="btn ${gremlinMode === 'marks' ? '' : 'btn-quiet'}" data-action="gremlin-mode" data-mode="marks">Marks</button><button class="btn ${gremlinMode === 'cards' ? '' : 'btn-quiet'}" data-action="gremlin-mode" data-mode="cards">Cards</button></div>${playerChoices([room.viewer.playerId], 2, 'select-player', gremlinMode === 'cards')}<div class="action-footer"><button class="btn" data-action="night-action" data-role="Gremlin" ${selectedIds.length !== 2 ? 'disabled' : ''}>Switch ${gremlinMode} →</button></div>`;
   } else if (role === 'Robber') {
     intro = '<p>Optionally swap your card with an unshielded player. You will see the new card you took.</p>';
     controls = `${playerChoices([room.viewer.playerId], 1, 'select-player', true)}<div class="action-footer"><button class="btn btn-quiet" data-action="night-action" data-role="Robber" data-pass="true">Do nothing</button><button class="btn" data-action="night-action" data-role="Robber" ${selectedIds.length !== 1 ? 'disabled' : ''}>Swap cards →</button></div>`;
@@ -316,7 +376,7 @@ function renderNight() {
     intro = '<p>This role has no night action.</p>';
     controls = '<div class="empty">There is nothing to do. Your role is safe on this device.</div>';
   }
-  return `<div class="eyebrow">Phase 04 · Night</div><h2>${esc(action.copied ? `Doppelganger → ${role}` : role)}.</h2><p>${esc(action.copied ? 'You copied this role. Complete its action now.' : 'Complete your private action. Everyone is acting at once.')}</p>${intro}<div class="action-box"><h3>${esc(role)} action</h3>${controls}</div>`;
+  return `<div class="eyebrow">Phase 06 · Night</div><h2>${esc(action.copied ? `${room.own.startCard} → ${role}` : role)}.</h2><p>${esc(action.copied ? 'You copied this role. Complete its action now.' : 'Complete your private action. Everyone is acting at once.')}</p>${intro}<div class="action-box"><h3>${esc(role)} action</h3>${controls}</div>`;
 }
 function renderCardViews(cards = []) {
   if (!cards.length) return '';
@@ -349,10 +409,12 @@ function renderPrivateNotes() {
 function renderInformation() {
   if (room.viewer.kind !== 'player') return `<div class="eyebrow">Phase 05 · Information</div><h2>Players are checking their notes.</h2><p>${room.informationDone} of ${room.players.length} players are ready. No private notes are sent to the moderator.</p>${room.publicEvents?.length ? `<div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}${playerList()}`;
   const own = room.own;
+  const marksman = room.action?.role === 'Marksman' ? `<div class="action-box"><h3>Marksman information</h3><p>Choose different players to inspect one mark and one role.</p><div class="field"><span class="field-label">PLAYER MARK</span>${playerChoices([room.viewer.playerId], 1, 'info-mark-select')}</div><div class="field" style="margin-top:10px"><span class="field-label">PLAYER ROLE</span>${playerChoices([room.viewer.playerId], 1, 'info-role-select')}</div><div class="action-footer"><button class="btn" data-action="information-action" ${!infoMarkTarget || !infoRoleTarget || infoMarkTarget === infoRoleTarget ? 'disabled' : ''}>Inspect both →</button></div></div>` : '';
   const artifact = own.artifact ? `<div class="artifact-reveal"><span>✦</span><div><strong>${esc(own.artifact)}</strong><small>${esc(artifactGuidance(own.artifact))}</small></div></div>` : '';
   const wolfPack = own.wolfPack?.length ? `<div class="info-banner success"><strong>Wolf pack</strong><span>${own.wolfPack.map((player) => `${player.icon} ${esc(player.name)}`).join(' · ')}</span></div>` : '';
-  const evidence = own.seenCards?.length ? `<div class="info-banner"><strong>Evidence you saw</strong><div class="fact-grid">${own.seenCards.map((card) => `<div class="fact-item"><span class="fact-role">${esc(card.role)}</span><small>${esc(card.name)}</small></div>`).join('')}</div></div>` : `<div class="info-banner muted"><strong>Evidence</strong><span>You did not see any private cards this night.</span></div>`;
-  return `<div class="eyebrow">Phase 05 · Private information</div><h2>What did you learn?</h2><p>${wolfPack ? 'This is the information that matters most to your role.' : 'Your own role card is not shown here. Only cards you actually saw appear below.'}</p>${wolfPack}${evidence}${artifact}${own.notes.length ? `<div class="divider"></div><h3>Night notes</h3><div class="info-list">${own.notes.map((note) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(note)}</div></div>`).join('')}</div>` : ''}${room.publicEvents?.length ? `<div class="divider"></div><h3>Public reveals</h3><div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}<div class="divider"></div><h3>Setup question</h3><div class="question-prompt">${esc(room.question)}</div><p class="muted-small" style="margin:8px 0 0">You chose <strong>${esc(room.players.find((p) => p.id === own.setupTarget)?.name || 'No one')}</strong>. ${Math.round(own.setupMatchCount / Math.max(1, room.players.length) * 100)}% of players chose the same person.</p><div class="action-footer"><span class="note">${room.informationDone} of ${room.players.length} ready</span><button class="btn" data-action="information-done">Hide my notes →</button></div>`;
+  const evidence = own.seenCards?.length ? `<div class="info-banner"><strong>Role evidence</strong><div class="fact-grid">${own.seenCards.map((card) => `<div class="fact-item"><span class="fact-role">${esc(card.role)}</span><small>${esc(card.name)}</small></div>`).join('')}</div></div>` : `<div class="info-banner muted"><strong>Role evidence</strong><span>You did not see any private cards this night.</span></div>`;
+  const markEvidence = own.seenMarks?.length ? `<div class="info-banner"><strong>Mark evidence</strong><div class="fact-grid">${own.seenMarks.map((entry) => `<div class="fact-item"><span class="fact-role">Mark of ${esc(entry.mark)}</span><small>${esc(entry.name)}</small></div>`).join('')}</div></div>` : '';
+  return `<div class="eyebrow">Phase 07 · Private information</div><h2>What did you learn?</h2><p>${wolfPack ? 'This is the information that matters most to your role.' : 'Your own role card is not shown here. Only private information you actually received appears below.'}</p>${marksman}${wolfPack}${evidence}${markEvidence}${artifact}${own.notes.length ? `<div class="divider"></div><h3>Night notes</h3><div class="info-list">${own.notes.map((note) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(note)}</div></div>`).join('')}</div>` : ''}${room.publicEvents?.length ? `<div class="divider"></div><h3>Public reveals</h3><div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}<div class="divider"></div><h3>Setup question</h3><div class="question-prompt">${esc(room.question)}</div><p class="muted-small" style="margin:8px 0 0">You chose <strong>${esc(room.players.find((p) => p.id === own.setupTarget)?.name || 'No one')}</strong>. ${Math.round(own.setupMatchCount / Math.max(1, room.players.length) * 100)}% of players chose the same person.</p><div class="action-footer"><span class="note">${room.informationDone} of ${room.players.length} ready</span><button class="btn" data-action="information-done" ${room.action?.role === 'Marksman' && !room.action.submitted ? 'disabled' : ''}>Hide my notes →</button></div>`;
 }
 function renderDiscussion() {
   const mins = String(Math.floor(room.discussionSeconds / 60)).padStart(2, '0');
@@ -374,15 +436,19 @@ function renderResults() {
 function renderGame() {
   if (room.stage === 'roles') return `${phaseBar()}${renderRoleReveal()}`;
   if (room.stage === 'sentinel') return `${phaseBar()}${renderSentinel()}`;
-  const body = ({ setup: renderSetup, night: renderNight, information: renderInformation, discussion: renderDiscussion, voting: renderVoting, results: renderResults })[room.stage]?.() || '<div class="empty">Waiting for the moderator.</div>';
+  const body = ({ setup: renderSetup, dusk: renderDusk, mark: renderMark, night: renderNight, information: renderInformation, discussion: renderDiscussion, voting: renderVoting, results: renderResults })[room.stage]?.() || '<div class="empty">Waiting for the moderator.</div>';
   const hostFooter = room.viewer.kind === 'host' ? `<div class="action-footer" style="margin-top:18px"><button class="btn btn-danger" data-action="stop-game">Stop game</button></div>` : '';
   return `${phaseBar()}<div class="game-grid"><section class="main-card panel">${body}${hostFooter}</section><aside class="side-card panel"><h3>${room.viewer.kind === 'host' ? 'Players in this room' : 'Village'}</h3>${playerList()}${room.viewer.kind === 'player' && room.own?.card ? `<div class="side-rule">Your role card is private to this device.</div>` : ''}</aside></div>`;
 }
 function renderHostLobby() {
   const valid = room.host.totalCards === room.host.cardsNeeded && room.host.playerCount >= 3;
   const dayRoles = new Set(['Hunter', 'Tanner', 'Villager', 'Bodyguard']);
-  const renderRoleGroup = (label, roles) => `<section class="role-phase"><h3>${label}</h3>${roles.map(([name, color, icon]) => `<div class="role-row"><span class="role-title"><i class="role-dot" style="--role-color:${color}"></i><span>${icon}</span>${esc(name)}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="-1" aria-label="Remove ${esc(name)}">−</button><span class="role-qty">${room.roles[name]}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="1" aria-label="Add ${esc(name)}">+</button></div>`).join('')}</section>`;
-  const nightRoles = ROLES.filter(([name]) => !dayRoles.has(name));
+  const duskRoles = new Set(['Vampire', 'Master', 'Count', 'Renfield', 'Diseased', 'Cupid', 'Instigator', 'Priest', 'Assassin', 'Apprentice Assassin']);
+  const renderRoleRows = (roles) => roles.map(([name, color, icon]) => `<div class="role-row"><span class="role-title"><i class="role-dot" style="--role-color:${color}"></i><span>${icon}</span>${esc(name)}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="-1" aria-label="Remove ${esc(name)}">−</button><span class="role-qty">${room.roles[name]}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="1" aria-label="Add ${esc(name)}">+</button></div>`).join('');
+  const renderRoleGroup = (label, roles) => label === 'Night'
+    ? `<section class="role-phase"><h3>Dusk</h3>${renderRoleRows(ROLES.filter(([name]) => duskRoles.has(name)))}</section><section class="role-phase"><h3>Night</h3>${renderRoleRows(roles)}</section>`
+    : `<section class="role-phase"><h3>${label}</h3>${renderRoleRows(roles)}</section>`;
+  const nightRoles = ROLES.filter(([name]) => !dayRoles.has(name) && !duskRoles.has(name));
   const dayRoleList = ROLES.filter(([name]) => dayRoles.has(name));
   return `<div class="room-head"><div><div class="eyebrow">Moderator lobby · You are not a player</div><h1>Build your village.</h1><p>${room.host.cardsNeeded - 3} players · choose exactly ${room.host.cardsNeeded} cards, including three center cards.</p></div><div class="code-box"><div><small>Join code</small><strong>${room.code}</strong></div><button class="btn btn-quiet" data-action="copy-link" aria-label="Copy invite link">▣</button></div></div><div class="room-layout"><section class="section-panel panel"><div class="section-head"><h2>Players</h2><span class="count-label">${room.players.length} / 12</span></div>${playerList()}<button class="btn btn-quiet" style="margin-top:15px;width:100%" data-action="copy-link">Copy invite link</button><div class="lobby-foot">Players join from their own devices. Your moderator screen never receives a player card.</div></section><aside class="deck-panel panel"><div class="eyebrow">The cards</div><h2>Choose your roles.</h2><p class="deck-help">One card per player, plus three in the center.</p><div class="deck-total"><span>Cards selected</span><strong>${room.host.totalCards} / ${room.host.cardsNeeded}</strong></div><div class="role-list">${renderRoleGroup('Night', nightRoles)}${renderRoleGroup('Day', dayRoleList)}</div>${renderArtifactPool()}<div class="deck-status ${valid ? '' : 'invalid'}">${valid ? 'Deck is ready to deal.' : room.host.totalCards < room.host.cardsNeeded ? `${room.host.cardsNeeded - room.host.totalCards} more cards needed.` : room.host.totalCards > room.host.cardsNeeded ? 'Remove cards to match the player count.' : 'At least 3 players are needed.'}</div><div class="room-actions"><button class="btn" data-action="start-game" ${valid ? '' : 'disabled'}>Deal the cards →</button><button class="btn btn-quiet" data-action="leave">Leave room</button></div></aside></div>`;
 }
@@ -475,11 +541,20 @@ app.addEventListener('click', async (event) => {
     await act('host:start');
   } else if (action === 'role-ready') {
     await act('player:role-ready');
+  } else if (action === 'dusk-select') {
+    const max = button.dataset.max === '2' ? 2 : 1;
+    if (selectedIds.includes(button.dataset.id)) selectedIds = selectedIds.filter((id) => id !== button.dataset.id);
+    else if (selectedIds.length < max) selectedIds.push(button.dataset.id);
+    render();
+  } else if (action === 'info-mark-select' || action === 'info-role-select') {
+    if (action === 'info-mark-select') infoMarkTarget = button.dataset.id;
+    else infoRoleTarget = button.dataset.id;
+    render();
   } else if (action === 'select-player' || action === 'night-answer' || action === 'select-vote' || action === 'select-shield') {
     if (action === 'night-answer') { selectedIds = [button.dataset.id]; room.own.nightAnswer = button.dataset.id; }
     else if (action === 'select-vote') selectedIds = [button.dataset.id];
     else if (selectedIds.includes(button.dataset.id)) selectedIds = selectedIds.filter((id) => id !== button.dataset.id);
-    else if (room.stage === 'night' && room.action?.role === 'Troublemaker' && selectedIds.length < 2) selectedIds.push(button.dataset.id);
+    else if (room.stage === 'night' && ['Troublemaker', 'Gremlin'].includes(room.action?.role) && selectedIds.length < 2) selectedIds.push(button.dataset.id);
     else selectedIds = [button.dataset.id];
     render();
   } else if (action === 'select-center') {
@@ -494,8 +569,17 @@ app.addEventListener('click', async (event) => {
     seerMode = button.dataset.mode; selectedIds = []; selectedCenter = []; render();
   } else if (action === 'idiot-direction') {
     villageDirection = button.dataset.direction; render();
+  } else if (action === 'gremlin-mode') {
+    gremlinMode = button.dataset.mode; selectedIds = []; render();
   } else if (action === 'submit-setup') {
     const targetId = selectedIds[0]; selectedIds = []; await act('player:setup', { targetId });
+  } else if (action === 'submit-copycat') {
+    const centerIndex = selectedCenter[0]; selectedCenter = []; await act('player:copycat-setup', { centerIndex });
+  } else if (action === 'submit-dusk') {
+    const payload = room.action?.role === 'Cupid' ? { targetIds: [...selectedIds] } : { targetId: selectedIds[0] };
+    selectedIds = []; await act('player:dusk-action', payload);
+  } else if (action === 'mark-done') {
+    await act('player:mark-done');
   } else if (action === 'submit-shield') {
     const targetId = selectedIds[0]; selectedIds = []; await act('player:sentinel-shield', { targetId });
   } else if (action === 'submit-night-answer') {
@@ -503,15 +587,19 @@ app.addEventListener('click', async (event) => {
   } else if (action === 'night-action') {
     const payload = { pass: button.dataset.pass === 'true' };
     if (button.dataset.role === 'Werewolf' || button.dataset.role === 'Drunk') payload.centerIndex = selectedCenter[0];
-    if (['Mystic Wolf', 'Alpha Wolf', 'Robber', 'Revealer', 'Curator'].includes(button.dataset.role)) payload.targetId = selectedIds[0];
+    if (['Mystic Wolf', 'Alpha Wolf', 'Robber', 'Pickpocket', 'Revealer', 'Curator'].includes(button.dataset.role)) payload.targetId = selectedIds[0];
     if (button.dataset.role === 'Apprentice Seer') payload.centerIndex = selectedCenter[0];
     if (button.dataset.role === 'Witch') { payload.targetId = selectedIds[0]; payload.centerIndex = selectedCenter[0]; }
-    if (['Troublemaker', 'Paranormal Investigator'].includes(button.dataset.role)) payload.targetIds = [...selectedIds];
+    if (['Troublemaker', 'Paranormal Investigator', 'Gremlin'].includes(button.dataset.role)) payload.targetIds = [...selectedIds];
+    if (button.dataset.role === 'Gremlin') payload.mode = gremlinMode;
     if (button.dataset.role === 'Village Idiot') payload.direction = villageDirection;
     if (button.dataset.role === 'Seer') Object.assign(payload, seerMode === 'player' ? { mode: 'player', targetId: selectedIds[0] } : { mode: 'center', centerIndices: [...selectedCenter] });
     selectedIds = []; selectedCenter = []; await act('player:night-action', payload);
   } else if (action === 'information-done') {
     await act('player:information-done');
+  } else if (action === 'information-action') {
+    await act('player:information-action', { markTargetId: infoMarkTarget, roleTargetId: infoRoleTarget });
+    infoMarkTarget = ''; infoRoleTarget = '';
   } else if (action === 'timer') {
     await act('host:timer', { running: !room.timerRunning });
   } else if (action === 'begin-voting') {

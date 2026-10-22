@@ -51,7 +51,7 @@ function toast(message) {
 }
 function codeValue() { return Math.random().toString(36).slice(2, 6).toUpperCase(); }
 function render() {
-  app.innerHTML = `<div class="shell"><header class="topbar"><a class="brand" href="#" data-action="home"><span class="brand-mark">✳</span><span class="brand-name">werewolf<span>online</span></span></a><span class="top-note">One night. One village. No alibis.</span></header><main class="page">${state ? renderRoom() : renderHome()}</main></div>`;
+  app.innerHTML = `<div class="shell"><header class="topbar"><a class="brand" href="#" data-action="home"><span class="brand-mark">✳</span><span class="brand-name">Werewolf<span>Online</span></span></a><span class="top-note">One night. One village. No alibis.</span></header><main class="page">${state ? renderRoom() : renderHome()}</main></div>`;
 }
 function renderHome() {
   return `<section class="intro"><div class="intro-copy"><div class="eyebrow">A social deduction game</div><h1>Night falls.<br>Trust nobody.</h1><p>Deal the cards, close your eyes, and figure out who changed what before the village wakes.</p></div><div class="night-stamp" aria-hidden="true">☾</div></section>

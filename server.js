@@ -11,8 +11,14 @@ const io = new Server(httpServer, { cors: { origin: false } });
 const port = Number(process.env.PORT || 3000);
 const dataDir = process.env.DATA_DIR || path.join(__dirname, '.data');
 const roomFile = path.join(dataDir, 'rooms.json');
-const ROLES = ['Sentinel', 'Doppelganger', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Village Idiot', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
-const ROLE_ORDER = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Village Idiot', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const ROLES = ['Sentinel', 'Copycat', 'Doppelganger', 'Vampire', 'Master', 'Count', 'Renfield', 'Diseased', 'Cupid', 'Instigator', 'Priest', 'Assassin', 'Apprentice Assassin', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Marksman', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const DUSK_ORDER = ['Count', 'Renfield', 'Diseased', 'Cupid', 'Instigator', 'Priest', 'Assassin'];
+const NIGHT_ORDER = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Marksman', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const MARKS = ['Clarity', 'Vampire', 'Fear', 'Bat', 'Disease', 'Love', 'Traitor', 'Assassin'];
+const MARK_LABELS = Object.fromEntries(MARKS.map((mark) => [mark, `Mark of ${mark}`]));
+const COPY_ROLES = new Set(['Copycat', 'Doppelganger']);
+const NIGHT_ACTIVE_ROLES = new Set(['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Revealer', 'Curator']);
+const VAMPIRE_ROLES = new Set(['Vampire', 'Master', 'Count', 'Renfield']);
 const ICONS = ['🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🐝', '🦚', '🦔', '🐿️', '🦓', '🐙', '🪲', '🦋', '🐢', '🐬', '🦈', '🐧', '🐼', '🦩', '🦜', '🐊', '🦦', '🦥', '🦭', '🌲', '🍂', '🌻', '🪷', '🌵', '🌊', '🍄', '🌿', '🌼', '🌹', '🪻', '🌱', '🌙', '🌘', '☀️', '⚡', '❄️', '🌈', '🪐', '✨', '🌟', '☄️', '🌑', '🌕', '🔮', '🗝️', '🧿', '🪬', '🛡️', '⚔️', '👑', '🧪', '👻', '🧙', '🧚', '🧜', '🧸', '🦖', '🦄', '🐉', '🤖', '🪼', '🦂', '🕷️', '🎭', '🪭', '🪄', '🎃'];
 const ICON_THEMES = [
   { name: 'Woodland', count: 14, tiers: [['Common', 5], ['Uncommon', 4], ['Rare', 3], ['Epic', 2]] },
@@ -234,16 +240,22 @@ function shuffle(values) {
 }
 function timestamp() { return new Date().toISOString(); }
 function roleCount(room) { return Object.values(room.roles).reduce((sum, count) => sum + count, 0); }
-function effectiveRole(player) { return player.startCard === 'Doppelganger' ? player.effectiveRole : player.card; }
+function effectiveRole(player) { return COPY_ROLES.has(player.startCard) && player.effectiveRole ? player.effectiveRole : player.card; }
 function trueRole(player) { return player.artifactRole || player.transformedRole || effectiveRole(player); }
 function packRole(player) { return ['Werewolf', 'Mystic Wolf', 'Alpha Wolf'].includes(trueRole(player)); }
 function wolfTeamRole(player) { return ['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion'].includes(trueRole(player)); }
+function vampireTeamRole(player) { return VAMPIRE_ROLES.has(trueRole(player)) || player.mark === 'Vampire'; }
+function teamForPlayer(player) { return trueRole(player) === 'Tanner' ? 'tanner' : wolfTeamRole(player) ? 'wolves' : vampireTeamRole(player) ? 'vampires' : 'village'; }
+function teamSize(room, team) { return room.players.filter((player) => teamForPlayer(player) === team).length; }
 function playerById(room, id) { return room.players.find((player) => player.id === id); }
 function playerOutcome(room, player) {
   if (!room || room.stage !== 'results' || !room.winnerTeam) return null;
+  if ((room.votesForDiseased || []).includes(player.id)) return 'You lose';
+  if (trueRole(player) === 'Assassin') return player.assassinTargetId && room.deadIds?.includes(player.assassinTargetId) ? 'You win' : 'You lose';
   if (room.winnerTeam === 'tanner') return trueRole(player) === 'Tanner' ? 'You win' : 'You lose';
-  if (room.winnerTeam === 'village') return !wolfTeamRole(player) ? 'You win' : 'You lose';
-  return wolfTeamRole(player) ? 'You win' : 'You lose';
+  let wins = teamForPlayer(player) === room.winnerTeam;
+  if (player.mark === 'Traitor' && teamSize(room, teamForPlayer(player)) > 1) wins = !wins;
+  return wins ? 'You win' : 'You lose';
 }
 function inspectablePlayer(room, id, viewerId, allowSelf = false) {
   const player = playerById(room, id);
@@ -256,7 +268,10 @@ function recordCardView(player, target, role, label = 'Saw') {
   player.events.push(`${label} ${target.name}’s card: ${role}.`);
 }
 function roleQuestion(action, room) {
-  return ['Sentinel', 'Doppelganger', 'Dream Wolf', 'Minion', 'Mason', 'Insomniac', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'].includes(action.role)
+  if (action.questionOnly) return true;
+  const player = playerById(room, action.actorId);
+  const fearedAction = player?.mark === 'Fear' && NIGHT_ACTIVE_ROLES.has(action.role);
+  return fearedAction || ['Sentinel', 'Copycat', 'Doppelganger', 'Dream Wolf', 'Minion', 'Mason', 'Insomniac', 'Hunter', 'Tanner', 'Villager', 'Bodyguard', 'Marksman'].includes(action.role)
     || (action.role === 'Werewolf' && room.players.filter(packRole).length > 1);
 }
 function persist() {
@@ -302,6 +317,9 @@ function updateRoom(room) {
 function snapshot(room, session) {
   const user = session.kind === 'player' ? playerById(room, session.playerId) : null;
   const action = room.stage === 'night' && user ? room.nightQueue.find((entry) => entry.actorId === user.id) : null;
+  const duskAction = room.stage === 'dusk' && user ? activeDuskAction(room, user.id) : null;
+  const setupAction = room.stage === 'setup' && user ? room.setupQueue?.find((entry) => entry.actorId === user.id) : null;
+  const infoAction = room.stage === 'information' && user ? room.infoQueue.find((entry) => entry.actorId === user.id) : null;
   const privateNotes = user ? [...(user.events || [])] : [];
   const wolves = user && room.stage === 'night' && packRole(user)
     ? room.players.filter((player) => player.id !== user.id && wolfTeamRole(player)).map((player) => ({ id: player.id, name: player.name, icon: player.icon, dream: trueRole(player) === 'Dream Wolf' }))
@@ -315,22 +333,30 @@ function snapshot(room, session) {
     stage: room.stage,
     roles: room.roles,
     question: room.question,
+    duskQuestion: room.duskQuestion,
     nightQuestion: room.nightQuestion,
     artifactPool: session.kind === 'host' ? room.artifactPool : undefined,
     publicEvents: room.publicEvents || [],
-    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.connected), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.infoDone?.[player.id]), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
+    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
     viewer: { kind: session.kind, playerId: session.playerId || null, name: user?.name || 'Moderator' },
-    action: room.stage === 'night' ? {
-      ...(session.kind === 'host' ? {} : action ? { index: room.nightQueue.findIndex((entry) => entry.actorId === user.id) + 1, role: action.role, actorId: action.actorId, copied: Boolean(action.copied), requiresQuestion: roleQuestion(action, room), targets: packRole(user) ? wolves : undefined, submitted: Boolean(room.nightActions?.[user.id]) } : {}),
-      total: room.nightQueue.length,
+    action: room.stage === 'setup' ? {
+      ...(session.kind === 'host' ? {} : setupAction ? { role: setupAction.role, questionOnly: Boolean(setupAction.questionOnly), submitted: Boolean(room.setupActions?.[user.id]) } : {}),
+    } : room.stage === 'night' ? {
+      ...(session.kind === 'host' ? {} : action ? { index: room.nightQueue.findIndex((entry) => entry.actorId === user.id) + 1, role: action.role, actorId: action.actorId, copied: Boolean(action.copied), questionOnly: Boolean(action.questionOnly), requiresQuestion: roleQuestion(action, room), targets: packRole(user) ? wolves : undefined, submitted: Boolean(room.nightActions?.[user.id]) } : {}),
+    } : room.stage === 'dusk' ? {
+      ...(session.kind === 'host' ? {} : duskAction ? { key: duskAction.key, role: duskAction.role || 'Question', actorId: duskAction.actorId, copied: Boolean(duskAction.copied), shared: Boolean(duskAction.actorIds), questionOnly: Boolean(duskAction.questionOnly), submitted: Boolean(room.duskActions?.[duskAction.key]) } : {}),
+    } : room.stage === 'information' ? {
+      ...(session.kind === 'host' ? {} : infoAction ? { role: infoAction.role, submitted: Boolean(room.infoActions?.[user.id]) } : {}),
     } : null,
     setupIndex: room.setupIndex,
     setupCount: room.players.length,
     informationDone: Object.keys(room.infoDone || {}).length,
+    markDone: Object.keys(room.markReady || {}).length,
+    markCount: room.players.length,
     discussionSeconds: room.discussionSeconds,
     timerRunning: Boolean(room.timerRunning),
     voteDone: Object.keys(room.votes || {}).length,
-    results: room.stage === 'results' ? { voteCounts: room.voteCounts, deadIds: room.deadIds, winner: room.winner, winnerTeam: room.winnerTeam, center: room.center, alphaReserves: Object.values(room.alphaReserves || {}) } : null,
+    results: room.stage === 'results' ? { voteCounts: room.voteCounts, deadIds: room.deadIds, winner: room.winner, winnerTeam: room.winnerTeam, winningTeams: room.winningTeams || [], marksUsed: Boolean(room.duskUsed), center: room.center, alphaReserves: Object.values(room.alphaReserves || {}) } : null,
     own: user ? {
       icon: user.icon,
       card: ['roles', 'setup'].includes(room.stage) || (room.stage === 'sentinel' && user.startCard === 'Sentinel') ? user.startCard : null,
@@ -338,8 +364,12 @@ function snapshot(room, session) {
       effectiveRole: ['roles', 'setup'].includes(room.stage) ? user.effectiveRole || null : room.stage === 'results' ? user.effectiveRole || null : null,
       setupTarget: user.setupTarget || null,
       nightAnswer: user.nightAnswer || null,
+      originalRole: ['information', 'discussion', 'voting', 'results'].includes(room.stage) ? user.startCard : null,
       notes: privateNotes,
       seenCards: room.stage === 'information' ? user.seenCards || [] : [],
+      seenMarks: room.stage === 'information' ? user.seenMarks || [] : [],
+      mark: ['mark', 'results'].includes(room.stage) && (room.stage !== 'results' || room.duskUsed) ? user.mark || 'Clarity' : null,
+      lovers: room.stage === 'mark' ? (room.lovers || []).find((pair) => pair.includes(user.id))?.filter((id) => id !== user.id).map((id) => playerById(room, id)).filter(Boolean).map(({ id, name, icon }) => ({ id, name, icon })) || [] : [],
       wolfPack: room.stage === 'information' || room.stage === 'discussion' || room.stage === 'voting' || room.stage === 'results'
         ? packRole(user)
           ? room.players.filter((player) => player.id !== user.id && wolfTeamRole(player)).map((player) => ({ id: player.id, name: player.name, icon: player.icon }))
@@ -360,7 +390,7 @@ function snapshot(room, session) {
       alphaReserves: room.stage === 'results' ? room.alphaReserves : null,
       setupMatchCount: setupCounts[user.id] || 0,
     } : null,
-    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: room.setupIndex || 0, roleReadyCount: Object.keys(room.roleReady || {}).length, sentinelDone: Object.keys(room.shields || {}).length, nightDone: Object.keys(room.nightActions || {}).length, informationDone: Object.keys(room.infoDone || {}).length, hostKey: room.hostKey } : null,
+    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: Object.keys(room.setupActions || {}).length, roleReadyCount: Object.keys(room.roleReady || {}).length, sentinelDone: Object.keys(room.shields || {}).length, markDone: Object.keys(room.markReady || {}).length, nightDone: Object.keys(room.nightActions || {}).length, informationDone: Object.keys(room.infoDone || {}).length, hostKey: room.hostKey } : null,
   };
 }
 function ackError(ack, message) { if (typeof ack === 'function') ack({ error: message }); }
@@ -384,26 +414,131 @@ function authorize(socket, code, token, kind) {
   const player = room.players.find((entry) => entry.tokenHash === digest || normalizeKey(entry.key) === normalizedKey);
   if (!player) throw new Error('This player session is not valid. Rejoin with the room code.');
   player.connected = true;
+  player.activeTab = true;
+  player.lastPresenceAt = Date.now();
   player.socketId = socket.id;
   return { room, session: { code: room.code, kind: 'player', playerId: player.id } };
 }
-function roleQueue(room) {
-  const queue = [];
-  const doppelPlayers = room.players.filter((player) => player.startCard === 'Doppelganger');
-  for (const player of doppelPlayers) queue.push({ role: player.effectiveRole, actorId: player.id, copied: true });
-  for (const role of ROLE_ORDER) {
-    for (const player of room.players.filter((entry) => entry.startCard !== 'Doppelganger' && entry.startCard === role)) {
-      queue.push({ role, actorId: player.id, copied: false });
+function actorsForRole(room, role) {
+  return room.players.filter((player) => effectiveRole(player) === role);
+}
+function activeDuskAction(room, playerId) {
+  const exact = room.duskQueue?.find((entry) => entry.actorId === playerId && !room.duskActions?.[entry.key]);
+  if (exact) return exact;
+  return room.duskQueue?.find((entry) => entry.actorIds?.includes(playerId) && !room.duskActions?.[entry.key]);
+}
+function duskQueue(room) {
+  const copied = [];
+  const regular = [];
+  const vampires = room.players.filter((player) => VAMPIRE_ROLES.has(effectiveRole(player)) && effectiveRole(player) !== 'Renfield');
+  if (vampires.length) {
+    const copiedVampires = vampires.filter((player) => COPY_ROLES.has(player.startCard));
+    const action = { key: 'vampire-mark', role: 'Vampire', actorId: (copiedVampires[0] || vampires[0]).id, actorIds: vampires.map((player) => player.id), copied: copiedVampires.length > 0 };
+    (action.copied ? copied : regular).push(action);
+  }
+  for (const role of DUSK_ORDER) {
+    for (const player of actorsForRole(room, role)) {
+      if (COPY_ROLES.has(player.startCard) || player.startCard === role) {
+        const action = { key: `${role}:${player.id}`, role, actorId: player.id, copied: COPY_ROLES.has(player.startCard) };
+        if (action.copied) copied.push(action); else regular.push(action);
+      }
     }
   }
+  const roleActions = [...copied, ...regular];
+  if (!roleActions.length) return [];
+  const roleActorIds = new Set(roleActions.flatMap((entry) => entry.actorIds || [entry.actorId]));
+  const questions = room.players.filter((player) => !roleActorIds.has(player.id)).map((player) => ({ key: `question:${player.id}`, role: 'Question', actorId: player.id, questionOnly: true }));
+  return [...roleActions, ...questions];
+}
+function setupQueue(room) {
+  const setupActors = room.players.filter((player) => COPY_ROLES.has(player.startCard));
+  if (!setupActors.length) return [];
+  return room.players.flatMap((player) => {
+    if (COPY_ROLES.has(player.startCard)) return [{ actorId: player.id, role: player.startCard }];
+    if (player.startCard === 'Sentinel') return [];
+    return [{ actorId: player.id, role: 'Question', questionOnly: true }];
+  });
+}
+function nightQueue(room) {
+  const copied = [];
+  const regular = [];
+  for (const role of NIGHT_ORDER) {
+    const actors = actorsForRole(room, role);
+    for (const player of actors) {
+      const action = { role, actorId: player.id, copied: COPY_ROLES.has(player.startCard) };
+      if (action.copied) copied.push(action); else regular.push(action);
+    }
+  }
+  const roleActions = [...copied, ...regular];
+  if (!roleActions.length) return [];
+  const roleActorIds = new Set(roleActions.map((entry) => entry.actorId));
+  const questions = room.players.filter((player) => !roleActorIds.has(player.id)).map((player) => ({ role: 'Question', actorId: player.id, questionOnly: true }));
+  const queue = [...roleActions, ...questions];
   room.alphaReserves = Object.fromEntries(queue.filter((action) => action.role === 'Alpha Wolf').map((action) => [action.actorId, 'Werewolf']));
   return queue;
 }
+function startSetup(room) {
+  room.setupQueue = setupQueue(room);
+  room.setupActions = {};
+  room.stage = 'setup';
+  if (!room.setupQueue.length) startDusk(room);
+}
+function finishSetupAction(room, playerId) {
+  room.setupActions[playerId] = true;
+  if (room.setupQueue.every((entry) => room.setupActions[entry.actorId])) startDusk(room);
+}
+function startMark(room) {
+  room.stage = 'mark';
+  room.markReady = {};
+}
+function startDusk(room) {
+  room.duskQueue = duskQueue(room);
+  room.duskActions = {};
+  room.duskUsed = room.duskQueue.length > 0;
+  if (!room.duskUsed) return startNight(room);
+  room.stage = 'dusk';
+}
 function startNight(room) {
-  room.nightQueue = roleQueue(room);
+  room.nightQueue = nightQueue(room);
   room.nightActions = {};
   room.stage = 'night';
   room.players.forEach((player) => { player.nightAnswer = null; player.selectedIds = []; player.selectedCenter = []; });
+  if (!room.nightQueue.length) resolveNight(room);
+}
+function resolveDusk(room) {
+  for (const action of room.duskQueue) {
+    if (action.questionOnly) continue;
+    const data = room.duskActions[action.key]?.data || {};
+    const actor = playerById(room, action.actorId);
+    if (action.key === 'vampire-mark') {
+      playerById(room, data.targetId).mark = 'Vampire';
+    } else if (action.role === 'Count') {
+      playerById(room, data.targetId).mark = 'Fear';
+    } else if (action.role === 'Renfield') {
+      actor.mark = 'Bat';
+      const vampireRoles = room.players.filter((entry) => VAMPIRE_ROLES.has(effectiveRole(entry)) && effectiveRole(entry) !== 'Renfield');
+      const vampireMark = room.players.find((entry) => entry.mark === 'Vampire');
+      actor.events.push(`Vampires: ${vampireRoles.map((entry) => entry.name).join(', ') || 'none'}. Mark of Vampire: ${vampireMark?.name || 'no one'}.`);
+    } else if (action.role === 'Diseased') {
+      playerById(room, data.targetId).mark = 'Disease';
+    } else if (action.role === 'Cupid') {
+      const [first, second] = data.targetIds;
+      playerById(room, first).mark = 'Love';
+      playerById(room, second).mark = 'Love';
+      room.lovers ||= [];
+      room.lovers.push([first, second]);
+    } else if (action.role === 'Instigator') {
+      playerById(room, data.targetId).mark = 'Traitor';
+    } else if (action.role === 'Priest') {
+      actor.mark = 'Clarity';
+      playerById(room, data.targetId).mark = 'Clarity';
+    } else if (action.role === 'Assassin') {
+      playerById(room, data.targetId).mark = 'Assassin';
+      actor.assassinTargetId = data.targetId;
+    }
+  }
+  room.stage = 'mark';
+  room.markReady = {};
 }
 function resolveNight(room) {
   room.publicEvents = [];
@@ -412,7 +547,8 @@ function resolveNight(room) {
     const submission = room.nightActions[player.id];
     if (roleQuestion(action, room)) {
       const answer = playerById(room, submission.targetId);
-      player.events.push(`Night question: chose ${answer.name}.`);
+      if (action.questionOnly) player.events.push(`Because you don't have a Night role, here is a question to keep you occupied: ${room.nightQuestion} You chose ${answer.name}.`);
+      else player.events.push(`Night question: chose ${answer.name}.`);
       if (action.role === 'Minion') {
         const wolves = room.players.filter(wolfTeamRole);
         player.events.push(wolves.length ? `The werewolves are: ${wolves.map((entry) => entry.name).join(', ')}.` : 'There are no werewolves in the village.');
@@ -420,12 +556,13 @@ function resolveNight(room) {
         const masons = room.players.filter((entry) => entry.id !== player.id && trueRole(entry) === 'Mason');
         player.events.push(masons.length ? `Other Masons: ${masons.map((entry) => entry.name).join(', ')}.` : 'You saw no other Masons.');
       } else if (action.role === 'Insomniac') {
-        if (player.shielded) player.events.push('Your card was shielded by the Sentinel and could not be switched.');
+        if (player.mark === 'Fear') player.events.push('Mark of Fear stopped your Insomniac action.');
+        else if (player.shielded) player.events.push('Your card was shielded by the Sentinel and could not be switched.');
         else player.events.push(`Your card is now: ${player.card}.`);
       }
       continue;
     }
-    const data = submission.data;
+    const data = submission.data || {};
     if (action.role === 'Werewolf') {
       player.events.push(`Looked at center card ${data.centerIndex + 1}: ${room.center[data.centerIndex]}.`);
     } else if (action.role === 'Mystic Wolf') {
@@ -486,9 +623,28 @@ function resolveNight(room) {
           }
         }
       }
+    } else if (action.role === 'Pickpocket') {
+      if (data.pass) player.events.push('Chose not to swap marks.');
+      else {
+        const target = playerById(room, data.targetId);
+        [player.mark, target.mark] = [target.mark, player.mark];
+        player.seenMarks ||= [];
+        player.seenMarks.push({ name: 'your new mark', mark: player.mark });
+        player.events.push(`Swapped marks with ${target.name}. Your new mark is ${MARK_LABELS[player.mark] || 'Mark of Clarity'}.`);
+      }
     } else if (action.role === 'Troublemaker') {
       if (data.pass) player.events.push('Could not swap two unshielded cards and passed.');
       else {
+        const targets = data.targetIds.map((id) => playerById(room, id));
+        [targets[0].card, targets[1].card] = [targets[1].card, targets[0].card];
+        player.events.push(`Swapped ${targets[0].name}’s and ${targets[1].name}’s cards.`);
+      }
+    } else if (action.role === 'Gremlin') {
+      if (data.mode === 'marks') {
+        const targets = data.targetIds.map((id) => playerById(room, id));
+        [targets[0].mark, targets[1].mark] = [targets[1].mark, targets[0].mark];
+        player.events.push(`Swapped ${targets[0].name}’s and ${targets[1].name}’s marks.`);
+      } else {
         const targets = data.targetIds.map((id) => playerById(room, id));
         [targets[0].card, targets[1].card] = [targets[1].card, targets[0].card];
         player.events.push(`Swapped ${targets[0].name}’s and ${targets[1].name}’s cards.`);
@@ -532,6 +688,8 @@ function resolveNight(room) {
   }
   room.stage = 'information';
   room.infoDone = {};
+  room.infoActions = {};
+  room.infoQueue = actorsForRole(room, 'Marksman').map((player) => ({ actorId: player.id, role: 'Marksman' }));
 }
 function validatePlayerTurn(room, playerId, stage) {
   if (room.stage !== stage) throw new Error('That action is not available now.');
@@ -560,22 +718,38 @@ function finishVotes(room) {
   const eligible = room.players.filter((player) => !protectedIds.has(player.id));
   const highest = Math.max(0, ...eligible.map((player) => counts[player.id]));
   const dead = highest > 1 ? eligible.filter((player) => counts[player.id] === highest) : [];
-  const hunter = dead.find((player) => trueRole(player) === 'Hunter');
-  if (hunter && room.votes[hunter.id]) {
-    const hunterTarget = playerById(room, room.votes[hunter.id]);
-    if (hunterTarget && !dead.some((player) => player.id === hunterTarget.id)) dead.push(hunterTarget);
+  const deadIds = new Set(dead.map((player) => player.id));
+  room.votesForDiseased = Object.entries(room.votes).filter(([, targetId]) => playerById(room, targetId)?.mark === 'Disease').map(([voterId]) => voterId);
+  let expanded = true;
+  while (expanded) {
+    expanded = false;
+    for (const pair of room.lovers || []) {
+      if (pair.some((id) => deadIds.has(id))) {
+        for (const id of pair) if (!deadIds.has(id)) { deadIds.add(id); expanded = true; }
+      }
+    }
+    for (const player of room.players.filter((entry) => deadIds.has(entry.id) && trueRole(entry) === 'Hunter')) {
+      const targetId = room.votes[player.id];
+      if (targetId && !deadIds.has(targetId)) { deadIds.add(targetId); expanded = true; }
+    }
   }
-  const tanner = dead.find((player) => trueRole(player) === 'Tanner');
-  const wolvesAlive = room.players.some((player) => !dead.some((entry) => entry.id === player.id) && wolfTeamRole(player));
+  const finalDead = room.players.filter((player) => deadIds.has(player.id));
+  room.assassinTargetId = room.players.find((player) => player.mark === 'Assassin')?.id || null;
+  const tanner = finalDead.find((player) => trueRole(player) === 'Tanner');
+  const wolvesAlive = room.players.some((player) => !deadIds.has(player.id) && wolfTeamRole(player));
+  const vampiresAlive = room.players.some((player) => !deadIds.has(player.id) && vampireTeamRole(player));
   room.voteCounts = counts;
-  room.deadIds = dead.map((player) => player.id);
-  room.winnerTeam = tanner ? 'tanner' : wolvesAlive ? 'wolves' : 'village';
-  room.winner = tanner
+  room.deadIds = finalDead.map((player) => player.id);
+  const tannerCanOverride = Boolean(tanner && !wolvesAlive && !vampiresAlive);
+  room.winnerTeam = tannerCanOverride ? 'tanner' : wolvesAlive ? 'wolves' : vampiresAlive ? 'vampires' : 'village';
+  room.winner = tannerCanOverride
     ? `${tanner.name} wins as the Tanner.`
     : wolvesAlive
       ? dead.length
         ? 'The werewolf team wins. The village missed.'
         : 'The werewolf team wins. Nobody was voted out and wolves remain.'
+      : vampiresAlive
+        ? 'The vampire team wins. A vampire remains among the players.'
       : 'The village wins. No werewolves remain among the players.';
   room.stage = 'results';
   const rewardedAccounts = new Set();
@@ -737,13 +911,12 @@ io.on('connection', (socket) => {
     const account = accountFromToken(payload.accountToken);
     const hostToken = randomToken();
     const hostKey = shortKey(10);
-    const question = QUESTIONS[crypto.randomInt(QUESTIONS.length)];
-    const nightQuestion = QUESTIONS.filter((entry) => entry !== question)[crypto.randomInt(QUESTIONS.length - 1)];
+    const [question, duskQuestion, nightQuestion] = shuffle(QUESTIONS);
     const roles = Object.fromEntries(ROLES.map((role) => [role, 0]));
     roles.Werewolf = 1;
     roles.Seer = 1;
     roles.Villager = 2;
-    const room = { code, hostTokenHash: tokenHash(hostToken), hostKey, hostAccountId: account?.id || null, players: [], roles, artifactPool: ARTIFACTS.filter((artifact) => !UNAVAILABLE_ARTIFACTS.has(artifact)).slice(0, 3), stage: 'lobby', question, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
+    const room = { code, hostTokenHash: tokenHash(hostToken), hostKey, hostAccountId: account?.id || null, players: [], roles, artifactPool: ARTIFACTS.filter((artifact) => !UNAVAILABLE_ARTIFACTS.has(artifact)).slice(0, 3), stage: 'lobby', question, duskQuestion, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
     rooms.set(code, room);
     persist();
     if (account) recordAccountActivity(account.id, 'Moderator room created');
@@ -760,6 +933,8 @@ io.on('connection', (socket) => {
     const existingPlayer = playerKey ? room.players.find((player) => normalizeKey(player.key) === playerKey) : undefined;
     if (existingPlayer) {
       existingPlayer.connected = true;
+      existingPlayer.activeTab = true;
+      existingPlayer.lastPresenceAt = Date.now();
       existingPlayer.socketId = socket.id;
       if (account) existingPlayer.accountId = account.id;
       existingPlayer.name = existingPlayer.name || name || existingPlayer.name;
@@ -773,7 +948,7 @@ io.on('connection', (socket) => {
     if (!ICONS.includes(icon) || room.players.some((player) => player.icon === icon)) throw new Error('Choose an available icon.');
     const token = randomToken();
     if (account && !account.icons.includes(icon)) throw new Error('That icon is not in your collection yet.');
-    const player = { id: crypto.randomUUID(), tokenHash: tokenHash(token), key: shortKey(8), name, icon, accountId: account?.id || null, connected: true, socketId: socket.id };
+    const player = { id: crypto.randomUUID(), tokenHash: tokenHash(token), key: shortKey(8), name, icon, accountId: account?.id || null, connected: true, activeTab: true, lastPresenceAt: Date.now(), socketId: socket.id };
     room.players.push(player);
     const fixedCards = roleCount(room) - room.roles.Villager;
     room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
@@ -835,12 +1010,23 @@ io.on('connection', (socket) => {
       if (session.kind === 'host') room.hostConnected = false;
       else {
         const player = playerById(room, session.playerId);
-        if (player) player.connected = false;
+        if (player) { player.connected = false; player.activeTab = false; }
       }
       socket.leave(session.code);
       delete socket.data.session;
       updateRoom(room);
     }
+  }));
+
+  socket.on('player:presence', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    if (player.socketId !== socket.id) return;
+    const active = payload.active === true;
+    const changed = player.activeTab !== active;
+    player.activeTab = active;
+    player.connected = player.activeTab;
+    player.lastPresenceAt = Date.now();
+    if (changed) updateRoom(room);
   }));
 
   socket.on('host:kick-player', acked((payload) => {
@@ -893,14 +1079,19 @@ io.on('connection', (socket) => {
   socket.on('host:start', acked(() => {
     const room = requireHost(socket);
     if (room.stage !== 'lobby') throw new Error('This game has already started.');
-    const activePlayers = room.players.filter((player) => player.connected);
+    const activePlayers = room.players.filter((player) => player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000);
     if (activePlayers.length < 3 || activePlayers.length > 12) throw new Error('At least 3 online players are needed, and no more than 12 can play.');
     if (roleCount(room) !== activePlayers.length + 3) throw new Error('Choose exactly one card per online player, plus three center cards.');
     if (room.roles.Curator > 0 && room.artifactPool.length < 3) throw new Error('Select at least three available artifacts for the Curator.');
-    const deck = shuffle(ROLES.flatMap((role) => Array(room.roles[role]).fill(role)).slice(0, activePlayers.length + 3));
-    activePlayers.forEach((player, index) => Object.assign(player, { card: deck[index], startCard: deck[index], events: [], seenCards: [], setupTarget: null, effectiveRole: null, artifactRole: null, transformedRole: null, artifactName: null, artifact: false, shielded: false, nightAnswer: null }));
+    const deck = ROLES.flatMap((role) => Array(room.roles[role]).fill(role));
+    const nonVillagers = shuffle(deck.filter((role) => role !== 'Villager'));
+    const villagers = shuffle(deck.filter((role) => role === 'Villager'));
+    const orderedDeck = [...nonVillagers, ...villagers];
+    const playerCards = orderedDeck.slice(0, activePlayers.length);
+    const centerCards = orderedDeck.slice(activePlayers.length);
+    activePlayers.forEach((player, index) => Object.assign(player, { card: playerCards[index], startCard: playerCards[index], mark: 'Clarity', events: [], seenCards: [], seenMarks: [], setupTarget: null, effectiveRole: null, artifactRole: null, transformedRole: null, artifactName: null, artifact: false, shielded: false, nightAnswer: null }));
     room.players = activePlayers;
-    room.center = deck.slice(activePlayers.length);
+    room.center = centerCards;
     room.setupIndex = 0;
     room.stage = 'roles';
     room.roleReady = {};
@@ -912,15 +1103,50 @@ io.on('connection', (socket) => {
   socket.on('player:setup', acked((payload) => {
     const { room, player } = requirePlayer(socket);
     if (room.stage !== 'setup') throw new Error('Setup is not open now.');
+    const action = room.setupQueue?.find((entry) => entry.actorId === player.id && entry.role === 'Doppelganger');
+    if (!action || room.setupActions?.[player.id]) throw new Error('Doppelganger setup is not available now.');
     const target = playerById(room, payload.targetId);
     if (!target || target.id === player.id) throw new Error('Choose another player.');
-    if (target.shielded && player.startCard === 'Doppelganger') throw new Error('That card is shielded from being viewed.');
+    if (player.startCard === 'Copycat') throw new Error('Choose a center card for Copycat.');
+    if (target.shielded) throw new Error('That card is shielded from being viewed.');
     player.setupTarget = target.id;
-    if (player.startCard === 'Doppelganger') {
-      player.effectiveRole = target.startCard;
-      recordCardView(player, target, target.startCard, 'Copied');
-    }
-    if (room.players.every((entry) => entry.setupTarget)) startNight(room);
+    player.effectiveRole = target.startCard;
+    recordCardView(player, target, target.startCard, 'Copied');
+    finishSetupAction(room, player.id);
+    updateRoom(room);
+  }));
+
+  socket.on('player:copycat-setup', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    if (room.stage !== 'setup' || player.startCard !== 'Copycat' || player.setupTarget) throw new Error('Copycat setup is not available now.');
+    if (!room.setupQueue?.some((entry) => entry.actorId === player.id && entry.role === 'Copycat') || room.setupActions?.[player.id]) throw new Error('Copycat setup is not available now.');
+    const index = Number(payload.centerIndex);
+    if (!Number.isInteger(index) || index < 0 || index > 2) throw new Error('Choose a center card.');
+    player.setupTarget = `center:${index}`;
+    player.effectiveRole = room.center[index];
+    player.seenCards ||= [];
+    player.seenCards.push({ name: `center card #${index + 1}`, role: room.center[index] });
+    player.events.push(`Copied center card #${index + 1}: ${room.center[index]}.`);
+    finishSetupAction(room, player.id);
+    updateRoom(room);
+  }));
+
+  socket.on('player:phase-question', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    const answer = playerById(room, payload.targetId);
+    if (!answer || answer.id === player.id) throw new Error('Choose another player.');
+    if (room.stage === 'setup') {
+      const action = room.setupQueue?.find((entry) => entry.actorId === player.id && entry.questionOnly);
+      if (!action || room.setupActions?.[player.id]) throw new Error('You have no Setup question now.');
+      player.events.push(`Because you don't have a Setup role, here is a question to keep you occupied: ${room.question} You chose ${answer.name}.`);
+      finishSetupAction(room, player.id);
+    } else if (room.stage === 'dusk') {
+      const action = activeDuskAction(room, player.id);
+      if (!action?.questionOnly || room.duskActions?.[action.key]) throw new Error('You have no Dusk question now.');
+      player.events.push(`Because you don't have a Dusk role, here is a question to keep you occupied: ${room.duskQuestion} You chose ${answer.name}.`);
+      room.duskActions[action.key] = { data: { targetId: answer.id } };
+      if (Object.keys(room.duskActions).length === room.duskQueue.length) resolveDusk(room);
+    } else throw new Error('There is no phase question now.');
     updateRoom(room);
   }));
 
@@ -931,8 +1157,7 @@ io.on('connection', (socket) => {
     room.roleReady[player.id] = true;
     if (room.players.every((entry) => room.roleReady[entry.id])) {
       if (room.players.some((entry) => entry.startCard === 'Sentinel')) room.stage = 'sentinel';
-      else if (room.players.some((entry) => entry.startCard === 'Doppelganger')) room.stage = 'setup';
-      else startNight(room);
+      else startSetup(room);
       room.setupIndex = 0;
     }
     updateRoom(room);
@@ -949,9 +1174,52 @@ io.on('connection', (socket) => {
     room.shields[player.id] = target.id;
     const sentinels = room.players.filter((entry) => entry.startCard === 'Sentinel');
     if (sentinels.every((entry) => room.shields[entry.id])) {
-      if (room.players.some((entry) => entry.startCard === 'Doppelganger')) room.stage = 'setup';
-      else startNight(room);
+      startSetup(room);
     }
+    updateRoom(room);
+  }));
+
+  socket.on('player:dusk-action', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    const action = activeDuskAction(room, player.id);
+    if (room.stage !== 'dusk' || !action) throw new Error('You have no Dusk action now.');
+    if (room.duskActions[action.key]) throw new Error('This Dusk action is already locked.');
+    const data = {};
+    if (action.key === 'vampire-mark') {
+      if (player.id !== action.actorId) throw new Error('Only one vampire chooses the shared mark.');
+      const target = playerById(room, payload.targetId);
+      if (!target || VAMPIRE_ROLES.has(effectiveRole(target)) || target.mark === 'Vampire') throw new Error('Choose one non-vampire player.');
+      data.targetId = target.id;
+    } else if (action.role === 'Count' || action.role === 'Instigator' || action.role === 'Assassin') {
+      const target = playerById(room, payload.targetId);
+      if (!target || target.id === player.id && action.role !== 'Count') throw new Error('Choose another player.');
+      if (action.role === 'Count' && target.mark === 'Vampire') throw new Error('Choose a different player from the Mark of Vampire.');
+      data.targetId = target.id;
+    } else if (action.role === 'Diseased') {
+      const current = room.players.findIndex((entry) => entry.id === player.id);
+      const neighborIds = [room.players[(current + 1) % room.players.length].id, room.players[(current + room.players.length - 1) % room.players.length].id];
+      if (!neighborIds.includes(payload.targetId)) throw new Error('Choose the player on your left or right.');
+      data.targetId = payload.targetId;
+    } else if (action.role === 'Cupid') {
+      const ids = [...new Set(payload.targetIds || [])];
+      if (ids.length !== 2 || ids.some((id) => !playerById(room, id))) throw new Error('Choose two different players to love.');
+      data.targetIds = ids;
+    } else if (action.role === 'Priest') {
+      const target = playerById(room, payload.targetId);
+      if (!target || target.id === player.id) throw new Error('Choose one other player to receive Mark of Clarity.');
+      data.targetId = target.id;
+    } else if (action.role !== 'Renfield') throw new Error('This role does not have a Dusk action.');
+    room.duskActions[action.key] = { data };
+    if (Object.keys(room.duskActions).length === room.duskQueue.length) resolveDusk(room);
+    updateRoom(room);
+  }));
+
+  socket.on('player:mark-done', acked(() => {
+    const { room, player } = requirePlayer(socket);
+    if (room.stage !== 'mark') throw new Error('The Mark phase is not open now.');
+    room.markReady ||= {};
+    room.markReady[player.id] = true;
+    if (room.players.every((entry) => room.markReady[entry.id])) startNight(room);
     updateRoom(room);
   }));
 
@@ -1002,11 +1270,11 @@ io.on('connection', (socket) => {
       const index = Number(payload.centerIndex);
       if (!Number.isInteger(index) || index < 0 || index > 2) throw new Error('Choose a center card.');
       data.centerIndex = index;
-    } else if (role === 'Robber') {
+    } else if (role === 'Robber' || role === 'Pickpocket') {
       if (payload.pass) data.pass = true;
       else {
-        const target = inspectablePlayer(room, payload.targetId, player.id);
-        if (!target) throw new Error('Choose another unshielded player, or pass.');
+        const target = role === 'Pickpocket' ? playerById(room, payload.targetId) : inspectablePlayer(room, payload.targetId, player.id);
+        if (!target || target.id === player.id || role === 'Robber' && target.shielded) throw new Error('Choose another available player, or pass.');
         data.targetId = target.id;
       }
     } else if (role === 'Witch') {
@@ -1030,6 +1298,14 @@ io.on('connection', (socket) => {
       const targets = ids.map((id) => inspectablePlayer(room, id, player.id));
       if (targets.length !== 2 || targets.some((target) => !target)) throw new Error('Choose two different unshielded players other than yourself.');
       data.targetIds = ids;
+    } else if (role === 'Gremlin') {
+      if (!['marks', 'cards'].includes(payload.mode)) throw new Error('Choose whether to switch marks or cards.');
+      const ids = [...new Set(payload.targetIds || [])];
+      if (ids.length !== 2 || ids.some((id) => id === player.id)) throw new Error('Choose two other players.');
+      const targets = ids.map((id) => playerById(room, id));
+      if (targets.some((target) => !target || payload.mode === 'cards' && target.shielded)) throw new Error('Choose two available players.');
+      data.mode = payload.mode;
+      data.targetIds = ids;
     } else if (role === 'Village Idiot') {
       if (!['left', 'right'].includes(payload.direction)) throw new Error('Choose left or right.');
       data.direction = payload.direction;
@@ -1050,6 +1326,7 @@ io.on('connection', (socket) => {
   socket.on('player:information-done', acked(() => {
     const { room, player } = requirePlayer(socket);
     if (room.stage !== 'information') throw new Error('Information is not available now.');
+    if (room.infoQueue?.some((entry) => entry.actorId === player.id) && !room.infoActions?.[player.id]) throw new Error('Complete your Marksman information action first.');
     room.infoDone ||= {};
     room.infoDone[player.id] = true;
     if (room.players.every((entry) => room.infoDone[entry.id])) {
@@ -1057,6 +1334,22 @@ io.on('connection', (socket) => {
       room.discussionSeconds = 300;
       room.timerRunning = false;
     }
+    updateRoom(room);
+  }));
+
+  socket.on('player:information-action', acked((payload) => {
+    const { room, player } = requirePlayer(socket);
+    const action = room.infoQueue?.find((entry) => entry.actorId === player.id);
+    if (room.stage !== 'information' || !action || action.role !== 'Marksman') throw new Error('You have no information action now.');
+    if (room.infoActions?.[player.id]) throw new Error('Your information action is already locked.');
+    const markTarget = playerById(room, payload.markTargetId);
+    const roleTarget = playerById(room, payload.roleTargetId);
+    if (!markTarget || !roleTarget || markTarget.id === roleTarget.id) throw new Error('Choose two different players, one for a mark and one for a role.');
+    player.seenMarks ||= [];
+    player.seenMarks.push({ name: markTarget.name, mark: markTarget.mark });
+    recordCardView(player, roleTarget, trueRole(roleTarget));
+    room.infoActions ||= {};
+    room.infoActions[player.id] = true;
     updateRoom(room);
   }));
 
@@ -1105,9 +1398,9 @@ io.on('connection', (socket) => {
     const room = requireHost(socket);
     if (room.stage !== 'results') throw new Error('This game has not finished.');
     for (const player of room.players) {
-      for (const key of ['card', 'startCard', 'events', 'seenCards', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole']) delete player[key];
+      for (const key of ['card', 'startCard', 'mark', 'events', 'seenCards', 'seenMarks', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole', 'assassinTargetId']) delete player[key];
     }
-    for (const key of ['center', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'votes', 'voteCounts', 'deadIds', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
+    for (const key of ['center', 'duskQueue', 'duskActions', 'markReady', 'lovers', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'infoQueue', 'infoActions', 'votes', 'votesForDiseased', 'voteCounts', 'deadIds', 'assassinTargetId', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
     const question = QUESTIONS[crypto.randomInt(QUESTIONS.length)];
     room.question = question;
     room.nightQuestion = QUESTIONS.filter((entry) => entry !== question)[crypto.randomInt(QUESTIONS.length - 1)];
@@ -1119,9 +1412,9 @@ io.on('connection', (socket) => {
     const room = requireHost(socket);
     if (room.stage === 'lobby') throw new Error('The lobby is already open.');
     for (const player of room.players) {
-      for (const key of ['card', 'startCard', 'events', 'seenCards', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole']) delete player[key];
+      for (const key of ['card', 'startCard', 'mark', 'events', 'seenCards', 'seenMarks', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole', 'assassinTargetId']) delete player[key];
     }
-    for (const key of ['center', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'votes', 'voteCounts', 'deadIds', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
+    for (const key of ['center', 'duskQueue', 'duskActions', 'markReady', 'lovers', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'infoQueue', 'infoActions', 'votes', 'votesForDiseased', 'voteCounts', 'deadIds', 'assassinTargetId', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
     room.discussionSeconds = 0;
     room.timerRunning = false;
     stopTimer(room.code);

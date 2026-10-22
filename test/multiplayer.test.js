@@ -14,7 +14,7 @@ let serverUrl;
 let temporaryData;
 const sockets = [];
 const iconSet = ['🌙', '🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🐝', '🦚'];
-const roleOrder = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Village Idiot', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const roleOrder = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Marksman', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
 
 function pause(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 async function freePort() {
@@ -87,7 +87,7 @@ async function playToVoting(clients, roles) {
   assert.ok(players.every((client) => client.latestRoom.players.every((player) => !('card' in player))), 'other players\' cards stay private');
   players.forEach((client) => { client.testRole = client.latestRoom.own.card; });
   await Promise.all(players.map((client) => request(client, 'player:role-ready')));
-  await waitForRoom(clients, (room) => ['sentinel', 'setup', 'night'].includes(room.stage), 'post-role-reveal setup or night');
+  await waitForRoom(clients, (room) => ['sentinel', 'setup', 'dusk', 'mark', 'night'].includes(room.stage), 'post-role-reveal setup or night');
   while (host.latestRoom.stage === 'sentinel') {
     const sentinel = players.find((client) => client.testRole === 'Sentinel' && !client.latestRoom.own.shieldTarget);
     const protectedPlayer = host.latestRoom.players.find((player) => player.id !== sentinel.latestRoom.viewer.playerId && !player.shielded);
@@ -95,22 +95,67 @@ async function playToVoting(clients, roles) {
     await waitForRoom(clients, (room) => room.stage !== 'sentinel' || room.players.some((player) => player.shielded), 'Sentinel shield');
   }
   if (host.latestRoom.stage === 'setup') {
-    const activePlayers = players.filter((client) => !host.latestRoom.players.find((player) => player.id === client.latestRoom.viewer.playerId)?.setupTarget);
+    const activePlayers = players.filter((client) => ['Doppelganger', 'Copycat'].includes(client.testRole) && !client.latestRoom.own.setupTarget);
     await Promise.all(activePlayers.map((client) => {
       const room = host.latestRoom;
       const player = room.players.find((entry) => entry.id === client.latestRoom.viewer.playerId);
-      const target = room.players.find((entry) => entry.id !== player.id && !((client.testRole === 'Doppelganger') && entry.shielded));
+      if (client.testRole === 'Copycat') return request(client, 'player:copycat-setup', { centerIndex: 0 });
+      const target = room.players.find((entry) => entry.id !== player.id && !entry.shielded);
       return request(client, 'player:setup', { targetId: target.id });
     }));
-    await waitForRoom(clients, (room) => room.stage === 'night', 'night phase after simultaneous setup');
+    await waitForRoom(clients, (room) => ['dusk', 'mark', 'night'].includes(room.stage), 'Dusk after simultaneous setup');
+  }
+
+  while (host.latestRoom.stage === 'dusk') {
+    const duskDoneBefore = host.latestRoom.host.duskDone;
+    const assigned = players.filter((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted);
+    if (!assigned.length) throw new Error('Dusk has no active players but did not advance.');
+    let vampireTargetId = null;
+    for (const actor of assigned) {
+      const action = actor.latestRoom.action;
+      const actorId = actor.latestRoom.viewer.playerId;
+      const available = players.filter((client) => client.latestRoom.viewer.playerId !== actorId);
+      let payload = {};
+      if (action.role === 'Vampire') {
+        const target = available.find((client) => !['Vampire', 'Master', 'Count', 'Renfield'].includes(client.testRole));
+        if (!target) throw new Error('No non-vampire target is available in the Dusk test deck.');
+        vampireTargetId = target.latestRoom.viewer.playerId;
+        payload = { targetId: vampireTargetId };
+      } else if (action.role === 'Count') {
+        const target = available.find((client) => client.latestRoom.viewer.playerId !== vampireTargetId);
+        if (!target) throw new Error('Count needs a second target distinct from the Vampire mark.');
+        payload = { targetId: target.latestRoom.viewer.playerId };
+      } else if (action.role === 'Diseased') {
+        const position = players.indexOf(actor);
+        payload = { targetId: players[(position + 1) % players.length].latestRoom.viewer.playerId };
+      } else if (action.role === 'Cupid') {
+        payload = { targetIds: available.slice(0, 2).map((client) => client.latestRoom.viewer.playerId) };
+      } else if (action.role === 'Priest') {
+        payload = { targetId: available[0].latestRoom.viewer.playerId };
+      } else if (['Instigator', 'Assassin'].includes(action.role)) {
+        payload = { targetId: available[0].latestRoom.viewer.playerId };
+      }
+      try { await request(actor, 'player:dusk-action', payload); }
+      catch (error) { throw new Error(`${action.role} for ${actor.latestRoom.viewer.name}: ${error.message}`); }
+      await until(() => actor.latestRoom.stage !== 'dusk' || actor.latestRoom.action?.key !== action.key, 'next private Dusk turn');
+    }
+    await until(() => players.every((client) => client.latestRoom.stage !== 'dusk' || client.latestRoom.action?.done > duskDoneBefore), 'Dusk action resolution');
+  }
+
+  if (host.latestRoom.stage === 'mark') {
+    await waitForRoom(clients, (room) => room.stage === 'mark', 'private Mark phase');
+    assert.ok(players.every((client) => client.latestRoom.own.mark), 'each player sees their own mark');
+    assert.ok(players.every((client) => client.latestRoom.players.every((player) => !('mark' in player))), 'marks stay private during Mark');
+    await Promise.all(players.map((client) => request(client, 'player:mark-done')));
   }
 
   await waitForRoom(clients, (room) => room.stage === 'night', 'night phase');
+  const nightActionTotal = host.latestRoom.action.total;
   assert.equal(host.latestRoom.own, null, 'moderator receives no night action');
   assert.ok(players.every((client) => client.latestRoom.own.card === null && client.latestRoom.own.startCard === null), 'roles are hidden after the reveal phase');
-    const actions = players.map((client) => client.latestRoom.action).filter(Boolean);
-    assert.equal(actions.length, players.length, 'each player gets their own night turn');
-    assert.ok(players.every((client) => players.filter((other) => other !== client).every((other) => !other.latestRoom.action || other.latestRoom.action.actorId === other.latestRoom.viewer.playerId)), 'players see only their own action details');
+    const actions = players.map((client) => client.latestRoom.action).filter((action) => action?.role);
+    assert.equal(actions.length, nightActionTotal, 'each queued night role gets its own turn');
+    assert.ok(players.every((client) => players.filter((other) => other !== client).every((other) => !other.latestRoom.action?.role || other.latestRoom.action.actorId === other.latestRoom.viewer.playerId)), 'players see only their own role action details');
     assert.ok(actions.filter((action) => ['Seer', 'Robber', 'Troublemaker', 'Drunk'].includes(action.role)).every((action) => !action.requiresQuestion), 'roles with an action do not receive a distractor question');
     const ordered = [...actions].sort((left, right) => left.index - right.index);
     const expected = [...actions].sort((left, right) => {
@@ -121,7 +166,7 @@ async function playToVoting(clients, roles) {
     assert.deepEqual(ordered.map((action) => action.actorId), expected.map((action) => action.actorId), 'actions resolve in Doppelganger-then-role order');
   const submissions = players.map(async (actor, actorIndex) => {
     const action = actor.latestRoom.action;
-    if (!action) throw new Error(`Player ${actorIndex} did not receive their own night action.`);
+    if (!action?.role) return null;
     const others = actor.latestRoom.players.filter((player) => player.id !== actor.latestRoom.viewer.playerId);
     const protectedPlayer = actor.latestRoom.players.find((player) => player.shielded && player.id !== actor.latestRoom.viewer.playerId);
     if (protectedPlayer && !action.requiresQuestion && ['Mystic Wolf', 'Alpha Wolf', 'Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Troublemaker', 'Revealer', 'Curator'].includes(action.role)) {
@@ -134,20 +179,32 @@ async function playToVoting(clients, roles) {
     if (action.role === 'Witch') return request(actor, 'player:night-action', { centerIndex: 0, targetId: others.find((player) => !player.shielded)?.id });
     if (action.role === 'Village Idiot') return request(actor, 'player:night-action', { direction: 'left' });
     if (action.role === 'Seer') return request(actor, 'player:night-action', { mode: 'player', targetId: others.find((player) => !player.shielded)?.id });
-    if (action.role === 'Robber') return request(actor, 'player:night-action', { targetId: others.find((player) => !player.shielded)?.id });
+    if (action.role === 'Robber' || action.role === 'Pickpocket') return request(actor, 'player:night-action', { targetId: others.find((player) => !player.shielded)?.id });
     if (action.role === 'Troublemaker' || action.role === 'Paranormal Investigator') {
       const targets = others.filter((player) => !player.shielded).map((player) => player.id).slice(0, 2);
       return request(actor, 'player:night-action', targets.length < 2 ? { pass: true } : { targetIds: targets });
+    }
+    if (action.role === 'Gremlin') {
+      const targets = others.filter((player) => !player.shielded).map((player) => player.id).slice(0, 2);
+      return request(actor, 'player:night-action', { mode: 'marks', targetIds: targets.length >= 2 ? targets : [others[0].id, others[1 % others.length].id] });
     }
     throw new Error(`Unexpected action without night question: ${action.role}`);
   });
   await Promise.all(submissions);
   await waitForRoom(clients, (room) => room.stage === 'information', 'all simultaneous night actions resolved');
-  assert.equal(host.latestRoom.host.nightDone, players.length, 'moderator sees night readiness count');
+  assert.equal(host.latestRoom.host.nightDone, nightActionTotal, 'moderator sees night readiness count');
   assert.ok(players.every((client) => client.latestRoom.own.card === null && client.latestRoom.own.startCard === null), 'information phase hides each player role and final card');
 
   assert.equal(host.latestRoom.stage, 'information');
-  await Promise.all(players.map((client) => request(client, 'player:information-done')));
+  await Promise.all(players.map(async (client) => {
+    if (client.latestRoom.action?.role === 'Marksman') {
+      const ownId = client.latestRoom.viewer.playerId;
+      const targets = client.latestRoom.players.filter((player) => player.id !== ownId);
+      await request(client, 'player:information-action', { markTargetId: targets[0].id, roleTargetId: targets[1].id });
+      await until(() => client.latestRoom.own.seenMarks?.length === 1 && client.latestRoom.own.seenCards?.length > 0, 'Marksman evidence');
+    }
+    await request(client, 'player:information-done');
+  }));
   await waitForRoom(clients, (snapshot) => snapshot.stage === 'discussion', 'discussion phase');
   await request(host, 'host:begin-voting');
   await waitForRoom(clients, (snapshot) => snapshot.stage === 'voting', 'voting phase');
@@ -407,6 +464,40 @@ test('expanded night roles all submit and resolve in configured order', async ()
   assert.equal(host.latestRoom.host.nightDone, players.length);
   assert.ok(players.every((client) => client.latestRoom.own.card === null), 'night results do not restore the dealt role');
 });
+
+test('Dusk marks resolve before Night and new mark roles complete their actions', async () => {
+  const clients = await Promise.all(Array.from({ length: 7 }, () => connectClient()));
+  const [host, ...players] = clients;
+  await beginRoom(clients);
+  await playToVoting(clients, {
+    Vampire: 1, Count: 1, Assassin: 1, Marksman: 1, Pickpocket: 1, Gremlin: 1, Villager: 3,
+  });
+  assert.equal(host.latestRoom.stage, 'voting');
+  assert.ok(players.some((client) => client.testRole === 'Vampire'));
+  assert.ok(players.some((client) => client.testRole === 'Count'));
+  assert.ok(players.some((client) => client.testRole === 'Marksman'));
+});
+
+test('a voted-out Tanner does not override surviving wolves or vampires', async () => {
+  const clients = [await connectClient(), await connectClient(), await connectClient(), await connectClient()];
+  const [host] = clients;
+  await beginRoom(clients);
+  await playToVoting(clients, { Werewolf: 1, Tanner: 1, Villager: 4 });
+  const wolfClient = playersWithRole(clients.slice(1), 'Werewolf')[0];
+  const tannerClient = playersWithRole(clients.slice(1), 'Tanner')[0];
+  const villagerClient = playersWithRole(clients.slice(1), 'Villager')[0];
+  await Promise.all([
+    request(wolfClient, 'player:vote', { targetId: tannerClient.latestRoom.viewer.playerId }),
+    request(villagerClient, 'player:vote', { targetId: tannerClient.latestRoom.viewer.playerId }),
+  ]);
+  await waitForRoom(clients, (snapshot) => snapshot.stage === 'results', 'Tanner elimination result');
+  assert.equal(host.latestRoom.results.winnerTeam, 'wolves');
+  assert.equal(host.latestRoom.results.winner, 'The werewolf team wins. The village missed.');
+});
+
+function playersWithRole(clients, role) {
+  return clients.filter((client) => client.testRole === role);
+}
 
 test('one vote per player with no repeated target eliminates nobody', async () => {
   const clients = [await connectClient(), await connectClient(), await connectClient(), await connectClient()];
