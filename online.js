@@ -74,6 +74,11 @@ let villageDirection = 'left';
 let gremlinMode = 'cards';
 let infoMarkTarget = '';
 let infoRoleTarget = '';
+let chatDraft = '';
+let chatScope = 'public';
+let chatTargetId = '';
+let chatScrollTop = 0;
+let chatStickToBottom = true;
 let toastTimer;
 let adminChallenge = null;
 let adminToken = '';
@@ -99,7 +104,6 @@ async function act(event, payload) {
 }
 function saveSession(next) {
   session = next;
-  localStorage.setItem('nightshift-session', JSON.stringify(next));
 }
 function accountHeaders() {
   return accountToken ? { Authorization: `Bearer ${accountToken}` } : {};
@@ -116,22 +120,22 @@ async function refreshAccount() {
   }
 }
 function clearSession() {
-  localStorage.removeItem('nightshift-session'); session = null; room = null; pendingCode = '';
+  session = null; room = null; pendingCode = '';
   history.replaceState({}, '', location.pathname); render();
 }
-function updatePresence(active = !document.hidden) {
+function updatePresence(active = !document.hidden && document.hasFocus()) {
   if (!session || session.kind !== 'player' || !socket.connected) return;
   emit('player:presence', { active }).catch(() => {});
 }
 function connectSession() {
   if (!session || !socket.connected) return;
-  updatePresence(true);
-  emit('room:resume', { ...session, accountToken }).then(({ room: snapshot }) => { room = snapshot; render(); }).catch(() => clearSession());
+  emit('room:resume', { ...session, accountToken }).then(({ room: snapshot }) => { room = snapshot; render(); updatePresence(); }).catch(() => clearSession());
 }
 socket.on('connect', connectSession);
-window.addEventListener('focus', () => updatePresence(true));
-window.addEventListener('blur', () => updatePresence(false));
-document.addEventListener('visibilitychange', () => updatePresence(!document.hidden));
+window.addEventListener('focus', () => updatePresence());
+window.addEventListener('blur', () => updatePresence());
+document.addEventListener('visibilitychange', () => updatePresence());
+setInterval(() => updatePresence(), 2000);
 socket.on('disconnect', () => { if (room) render(); });
 socket.on('room:update', (snapshot) => { room = snapshot; render(); });
 socket.on('room:kicked', () => {
@@ -158,6 +162,13 @@ function parseRoute() {
 }
 function render() {
   parseRoute();
+  const chatInput = app.querySelector('#chat-message');
+  if (chatInput) chatDraft = chatInput.value;
+  const chatLog = app.querySelector('#chat-log');
+  if (chatLog) {
+    chatStickToBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 28;
+    chatScrollTop = chatLog.scrollTop;
+  }
   const scrollY = window.scrollY;
   const roleScrollTop = app.querySelector('.role-list')?.scrollTop || 0;
   const focusedRoleControl = app.contains(document.activeElement) && document.activeElement.matches('[data-action="role-change"]')
@@ -169,6 +180,10 @@ function render() {
     window.scrollTo({ top: scrollY, left: 0, behavior: 'instant' });
     const roleList = app.querySelector('.role-list');
     if (roleList) roleList.scrollTop = roleScrollTop;
+    const nextChatInput = app.querySelector('#chat-message');
+    if (nextChatInput) nextChatInput.value = chatDraft;
+    const nextChatLog = app.querySelector('#chat-log');
+    if (nextChatLog) nextChatLog.scrollTop = chatStickToBottom ? nextChatLog.scrollHeight : chatScrollTop;
     if (focusedRoleControl) app.querySelector(`[data-action="role-change"][data-role="${CSS.escape(focusedRoleControl.role)}"][data-delta="${focusedRoleControl.delta}"]`)?.focus({ preventScroll: true });
   });
 }
@@ -229,7 +244,33 @@ function renderIconCategories(reserved = [], current = '') {
 }
 function playerList() {
   if (!room.players.length) return '<div class="empty">No players yet. Copy the invite link to bring your village together.</div>';
-  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.connected ? 'Connected' : 'Offline'}"></span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
+  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${player.isBot ? '<span class="host-tag">AI</span>' : ''}${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.isBot ? 'AI player' : player.connected ? 'Connected' : 'Offline'}"></span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? player.isBot ? `<button class="kick-btn" data-action="remove-bot" data-id="${esc(player.id)}" aria-label="Remove AI ${esc(player.name)}" title="Remove AI player">×</button>` : `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
+}
+function renderBotControls() {
+  if (room.viewer.kind !== 'host' || room.stage !== 'lobby') return '';
+  const bots = room.players.filter((player) => player.isBot);
+  if (!bots.length) return '';
+  const options = (values, current, playerId, setting) => `<select class="bot-setting" data-bot-setting data-player-id="${esc(playerId)}" data-setting="${setting}" aria-label="${esc(setting)} for AI player">${values.map((value) => `<option value="${value}" ${current === value ? 'selected' : ''}>${value}</option>`).join('')}</select>`;
+  return `<div class="bot-settings"><h3>AI settings</h3>${bots.map((bot) => `<div class="bot-settings-row"><strong>${bot.icon} ${esc(bot.name)}</strong>${options(['Friendly', 'Analytical', 'Bold', 'Quiet'], bot.botSettings?.personality || 'Friendly', bot.id, 'personality')}${options(['Casual', 'Balanced', 'Sharp'], bot.botSettings?.difficulty || 'Balanced', bot.id, 'difficulty')}${options(['Quiet', 'Balanced', 'Chatty'], bot.botSettings?.talkativeness || 'Balanced', bot.id, 'talkativeness')}</div>`).join('')}</div>`;
+}
+function renderChat() {
+  const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
+  const ownId = room.viewer.kind === 'player' ? room.viewer.playerId : null;
+  const messages = room.chat || [];
+  const messageMarkup = messages.map((message) => {
+    const whisper = message.scope === 'whisper';
+    const recipient = whisper ? room.players.find((player) => player.id === (message.fromId === ownId ? message.toId : message.fromId)) : null;
+    const label = whisper ? `Whisper ${message.fromId === ownId ? 'to' : 'from'} ${recipient?.name || 'AI player'}` : 'Everyone';
+    return `<div class="chat-message ${whisper ? 'whisper' : ''} ${message.isBot ? 'bot-message' : ''}"><div class="chat-message-meta"><strong>${esc(message.fromName)}</strong><span>${label}</span><time>${new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>${esc(message.text)}</p></div>`;
+  }).join('');
+  const hostControls = room.viewer.kind === 'host' ? `<div class="chat-moderation"><span>Public chat ${settings.publicEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="publicEnabled">${settings.publicEnabled ? 'Disable' : 'Enable'}</button><span>Whispers ${settings.whispersEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="whispersEnabled">${settings.whispersEnabled ? 'Disable' : 'Enable'}</button></div>` : '';
+  const canSendPublic = settings.publicEnabled;
+  const canWhisper = room.viewer.kind === 'player' && settings.whispersEnabled;
+  if (chatScope === 'whisper' && !canWhisper) chatScope = canSendPublic ? 'public' : 'whisper';
+  if (!canSendPublic && canWhisper) chatScope = 'whisper';
+  if (canWhisper && !chatTargetId) chatTargetId = room.players.find((player) => player.id !== ownId)?.id || '';
+  const composer = canSendPublic || canWhisper ? `<form class="chat-form" data-form="chat"><select name="scope" id="chat-scope" aria-label="Message audience" ${!canWhisper ? 'disabled' : ''}><option value="public" ${chatScope === 'public' ? 'selected' : ''} ${!canSendPublic ? 'disabled' : ''}>Everyone</option>${canWhisper ? `<option value="whisper" ${chatScope === 'whisper' ? 'selected' : ''}>Whisper</option>` : ''}</select>${canWhisper ? `<select name="targetId" id="chat-target" aria-label="Whisper recipient" ${chatScope !== 'whisper' ? 'hidden' : ''}>${room.players.filter((player) => player.id !== ownId).map((player) => `<option value="${esc(player.id)}" ${chatTargetId === player.id ? 'selected' : ''}>${esc(player.name)}${player.isBot ? ' · AI' : ''}</option>`).join('')}</select>` : ''}<textarea id="chat-message" name="text" maxlength="240" rows="2" placeholder="${chatScope === 'whisper' ? 'Write a private message…' : 'Write a message…'}" required></textarea><button class="btn" type="submit" ${!chatDraft.trim() ? 'disabled' : ''}>Send</button></form>` : `<p class="chat-disabled">Chat and whispers are disabled by the moderator.</p>`;
+  return `<section class="chat-panel panel"><div class="section-head"><h2>Chat</h2><span class="count-label">${messages.length} / 60</span></div>${hostControls}<div class="chat-log" id="chat-log">${messageMarkup || '<div class="empty">No messages yet.</div>'}</div>${composer}</section>`;
 }
 function renderArtifactPool() {
   if (room.roles.Curator < 1) return '';
@@ -251,13 +292,16 @@ function phaseIndex() {
 }
 function phaseBar() {
   const current = phaseIndex();
-  return `<div class="phase-bar">${PHASES.map((label, index) => `<div class="phase-item ${index === current ? 'active' : index < current ? 'done' : ''}"><span class="phase-n">0${index + 1}</span>${label}</div>`).join('')}</div>`;
+  const omitMarks = room.duskUsed === false && ['night', 'information', 'discussion', 'voting', 'results'].includes(room.stage);
+  const phases = omitMarks ? PHASES.filter((label) => !['Dusk', 'Mark'].includes(label)) : PHASES;
+  const visibleIndex = phases.findIndex((label) => label === PHASES[current]);
+  return `<div class="phase-bar">${phases.map((label, index) => `<div class="phase-item ${index === visibleIndex ? 'active' : index < visibleIndex ? 'done' : ''}"><span class="phase-n">0${index + 1}</span>${label}</div>`).join('')}</div>`;
 }
 function playerChoices(excluded = [], amount = 1, event = 'select-player', excludeShielded = false) {
-  return `<div class="choice-grid" style="margin-top:13px">${room.players.filter((player) => !excluded.includes(player.id)).map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="${event}" data-id="${player.id}" ${player.shielded && excludeShielded || !selectedIds.includes(player.id) && selectedIds.length >= amount ? 'disabled' : ''}><span class="player-icon">${player.icon}</span>${esc(player.name)}${player.shielded ? ' 🛡' : ''}</button>`).join('')}</div>`;
+  return `<div class="choice-grid" style="margin-top:13px">${room.players.filter((player) => !excluded.includes(player.id)).map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="${event}" data-id="${player.id}" ${player.shielded && excludeShielded ? 'disabled' : ''}><span class="player-icon">${player.icon}</span>${esc(player.name)}${player.shielded ? ' 🛡' : ''}</button>`).join('')}</div>`;
 }
 function centerChoices(amount = 1) {
-  return `<div class="center-cards">${[0, 1, 2].map((index) => `<button class="center-card ${selectedCenter.includes(index) ? 'selected' : ''}" data-action="select-center" data-index="${index}" ${!selectedCenter.includes(index) && selectedCenter.length >= amount ? 'disabled' : ''}>CENTER ${index + 1}</button>`).join('')}</div>`;
+  return `<div class="center-cards">${[0, 1, 2].map((index) => `<button class="center-card ${selectedCenter.includes(index) ? 'selected' : ''}" data-action="select-center" data-index="${index}">CENTER ${index + 1}</button>`).join('')}</div>`;
 }
 function renderRoleReveal() {
   if (room.viewer.kind !== 'player') return `<div class="eyebrow">Phase 01 · Role reveal</div><h2>Players are checking their cards.</h2><p>${room.host.roleReadyCount} of ${room.players.length} players are ready. The moderator cannot see anyone’s role.</p>${playerList()}`;
@@ -276,6 +320,9 @@ function renderSentinel() {
 function renderSetup() {
   if (room.viewer.kind !== 'player') return `<div class="eyebrow">Phase 03 · Setup</div><h2>Players are choosing.</h2><p>${room.setupIndex} of ${room.setupCount} setup choices locked. Player roles are private, including from the moderator.</p>${playerList()}`;
   const own = room.own;
+  const action = room.action;
+  if (action?.questionOnly) return `<div class="eyebrow">Phase 03 · Setup</div><h2>A question while others set up.</h2><p>Because you don't have a Setup role, here is a question to keep you occupied.</p><div class="question-prompt">${esc(room.question)}</div>${playerChoices([room.viewer.playerId], 1, 'phase-question-select')}<div class="action-footer"><span class="note">Your answer stays private.</span><button class="btn" data-action="submit-phase-question" data-phase="setup" ${!selectedIds.length ? 'disabled' : ''}>Submit answer →</button></div>`;
+  if (action?.submitted) return `<div class="eyebrow">Phase 03 · Setup</div><h2>Choice locked.</h2><p>Your setup choice is private while the others finish.</p>`;
   const active = !own.setupTarget;
   const doppel = own.startCard === 'Doppelganger';
   const copycat = own.startCard === 'Copycat';
@@ -286,8 +333,9 @@ function renderSetup() {
 function renderDusk() {
   const action = room.action;
   if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Dusk marks are being placed.</h2><p>Roles resolve in order. Mark choices stay hidden until each player sees their own mark.</p>${playerList()}`;
-  if (!action?.role) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Dusk actions are underway.</h2><p>You have no Dusk action. Keep your card private while the marked players finish.</p>`;
+  if (!action?.role) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Dusk actions are underway.</h2><p>Your card stays private while the Dusk actions finish.</p>`;
   if (action.submitted) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>Action locked.</h2><p>Your choice is private. Dusk actions resolve in role order.</p><div class="result-banner"><span>✓</span><div><strong>${esc(action.copied ? `Copycat → ${action.role}` : action.role)}</strong><span>Waiting for the other Dusk actions.</span></div></div>`;
+  if (action.questionOnly) return `<div class="eyebrow">Phase 04 · Dusk</div><h2>A question while marks are placed.</h2><p>Because you don't have a Dusk role, here is a question to keep you occupied.</p><div class="question-prompt">${esc(room.duskQuestion)}</div>${playerChoices([room.viewer.playerId], 1, 'phase-question-select')}<div class="action-footer"><span class="note">Your answer stays private.</span><button class="btn" data-action="submit-phase-question" data-phase="dusk" ${!selectedIds.length ? 'disabled' : ''}>Submit answer →</button></div>`;
   let choices = '';
   let title = '';
   if (action.role === 'Vampire') {
@@ -303,7 +351,7 @@ function renderDusk() {
     choices = `<div class="choice-grid">${neighbors.map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="dusk-select" data-id="${player.id}"><span class="player-icon">${player.icon}</span>${esc(player.name)}</button>`).join('')}</div>`;
   } else if (action.role === 'Cupid') {
     title = 'Choose two players to receive Mark of Love.';
-    choices = `<div class="choice-grid">${room.players.map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="dusk-select" data-id="${player.id}" data-max="2" ${!selectedIds.includes(player.id) && selectedIds.length >= 2 ? 'disabled' : ''}><span class="player-icon">${player.icon}</span>${esc(player.name)}</button>`).join('')}</div>`;
+    choices = `<div class="choice-grid">${room.players.map((player) => `<button class="choice-btn ${selectedIds.includes(player.id) ? 'selected' : ''}" data-action="dusk-select" data-id="${player.id}" data-max="2"><span class="player-icon">${player.icon}</span>${esc(player.name)}</button>`).join('')}</div>`;
   } else if (action.role === 'Priest') {
     title = 'Mark yourself and one other player with Clarity.';
     choices = playerChoices([room.viewer.playerId], 1, 'dusk-select');
@@ -322,9 +370,10 @@ function renderMark() {
 function renderNight() {
   const action = room.action;
   if (room.viewer.kind === 'host') return `<div class="eyebrow">Phase 06 · Moderator</div><h2>Night actions are underway.</h2><p>Everyone acts at once on their own device. The server resolves actions in role order once all players are ready.</p>${playerList()}`;
-  if (!action) return `<div class="eyebrow">Phase 06 · Night</div><h2>Night actions are underway.</h2><p>You have no role action this night. The server resolves the cards after everyone is ready.</p><div class="empty">Keep your role private.</div>`;
+  if (!action) return `<div class="eyebrow">Phase 06 · Night</div><h2>Night actions are underway.</h2><p>Your card stays private while the Night actions finish.</p>`;
   if (action.submitted) return `<div class="eyebrow">Phase 06 · Night</div><h2>Action locked.</h2><p>Your choice is private. The server resolves actions in role order after the whole village is ready.</p><div class="result-banner"><span style="font-size:25px">✓</span><div><strong>${esc(action.copied ? `${room.own.startCard} → ${action.role}` : action.role)}</strong><span>Your action is locked.</span></div></div>`;
   const role = action.role;
+  if (action.questionOnly) return `<div class="eyebrow">Phase 06 · Night</div><h2>A question while the village sleeps.</h2><p>Because you don't have a Night role, here is a question to keep you occupied.</p><div class="question-prompt">${esc(room.nightQuestion)}</div>${playerChoices([room.viewer.playerId], 1, 'night-answer')}<div class="action-footer"><span class="note">Your answer stays private.</span><button class="btn" data-action="submit-night-answer" ${!selectedIds.length ? 'disabled' : ''}>Submit answer →</button></div>`;
   let controls = '';
   let intro = '';
   if (action.requiresQuestion) {
@@ -403,8 +452,9 @@ function artifactGuidance(artifact) {
 }
 function renderPrivateNotes() {
   const notes = room.own?.notes || [];
-  if (!notes.length) return '';
-  return `<div class="private-notes"><h3>Your private notes</h3><div class="info-list">${notes.map((note) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(note)}</div></div>`).join('')}</div></div>`;
+  const originalRole = room.own?.originalRole;
+  if (!notes.length && !originalRole) return '';
+  return `<div class="private-notes"><h3>Your private notes</h3><div class="info-list">${originalRole ? `<div class="info-line"><span class="player-icon">✦</span><div><strong>Original role</strong><small>${esc(originalRole)}</small></div></div>` : ''}${notes.map((note) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(note)}</div></div>`).join('')}</div></div>`;
 }
 function renderInformation() {
   if (room.viewer.kind !== 'player') return `<div class="eyebrow">Phase 05 · Information</div><h2>Players are checking their notes.</h2><p>${room.informationDone} of ${room.players.length} players are ready. No private notes are sent to the moderator.</p>${room.publicEvents?.length ? `<div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}${playerList()}`;
@@ -414,7 +464,7 @@ function renderInformation() {
   const wolfPack = own.wolfPack?.length ? `<div class="info-banner success"><strong>Wolf pack</strong><span>${own.wolfPack.map((player) => `${player.icon} ${esc(player.name)}`).join(' · ')}</span></div>` : '';
   const evidence = own.seenCards?.length ? `<div class="info-banner"><strong>Role evidence</strong><div class="fact-grid">${own.seenCards.map((card) => `<div class="fact-item"><span class="fact-role">${esc(card.role)}</span><small>${esc(card.name)}</small></div>`).join('')}</div></div>` : `<div class="info-banner muted"><strong>Role evidence</strong><span>You did not see any private cards this night.</span></div>`;
   const markEvidence = own.seenMarks?.length ? `<div class="info-banner"><strong>Mark evidence</strong><div class="fact-grid">${own.seenMarks.map((entry) => `<div class="fact-item"><span class="fact-role">Mark of ${esc(entry.mark)}</span><small>${esc(entry.name)}</small></div>`).join('')}</div></div>` : '';
-  return `<div class="eyebrow">Phase 07 · Private information</div><h2>What did you learn?</h2><p>${wolfPack ? 'This is the information that matters most to your role.' : 'Your own role card is not shown here. Only private information you actually received appears below.'}</p>${marksman}${wolfPack}${evidence}${markEvidence}${artifact}${own.notes.length ? `<div class="divider"></div><h3>Night notes</h3><div class="info-list">${own.notes.map((note) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(note)}</div></div>`).join('')}</div>` : ''}${room.publicEvents?.length ? `<div class="divider"></div><h3>Public reveals</h3><div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}<div class="divider"></div><h3>Setup question</h3><div class="question-prompt">${esc(room.question)}</div><p class="muted-small" style="margin:8px 0 0">You chose <strong>${esc(room.players.find((p) => p.id === own.setupTarget)?.name || 'No one')}</strong>. ${Math.round(own.setupMatchCount / Math.max(1, room.players.length) * 100)}% of players chose the same person.</p><div class="action-footer"><span class="note">${room.informationDone} of ${room.players.length} ready</span><button class="btn" data-action="information-done" ${room.action?.role === 'Marksman' && !room.action.submitted ? 'disabled' : ''}>Hide my notes →</button></div>`;
+  return `<div class="eyebrow">Phase 07 · Private information</div><h2>What did you learn?</h2><p>${wolfPack ? 'This is the information that matters most to your role.' : 'Your own role card is not shown here. Only private information you actually received appears below.'}</p>${marksman}${wolfPack}${evidence}${markEvidence}${artifact}${renderPrivateNotes()}${room.publicEvents?.length ? `<div class="divider"></div><h3>Public reveals</h3><div class="info-list">${room.publicEvents.map((event) => `<div class="info-line"><span class="player-icon">✦</span><div>${esc(event)}</div></div>`).join('')}</div>` : ''}<div class="divider"></div><h3>Setup question</h3><div class="question-prompt">${esc(room.question)}</div><p class="muted-small" style="margin:8px 0 0">You chose <strong>${esc(room.players.find((p) => p.id === own.setupTarget)?.name || 'No one')}</strong>. ${Math.round(own.setupMatchCount / Math.max(1, room.players.length) * 100)}% of players chose the same person.</p><div class="action-footer"><span class="note">${room.informationDone} of ${room.players.length} ready</span><button class="btn" data-action="information-done" ${room.action?.role === 'Marksman' && !room.action.submitted ? 'disabled' : ''}>Hide my notes →</button></div>`;
 }
 function renderDiscussion() {
   const mins = String(Math.floor(room.discussionSeconds / 60)).padStart(2, '0');
@@ -431,7 +481,7 @@ function renderVoting() {
 function renderResults() {
   const results = room.results;
   const myOutcome = room.own?.outcome || 'Unclear';
-  return `<div class="eyebrow">Phase 08 · Reveal</div><h2>The village decides.</h2><div class="result-banner"><span style="font-size:25px">${results?.deadIds?.length ? '☠' : '✦'}</span><div><strong>${esc(results?.winner)}</strong><span>${results?.winnerTeam ? `Winner team: ${esc(results.winnerTeam)}` : ''}${results?.deadIds?.length ? ` Voted out: ${room.players.filter((player) => results.deadIds.includes(player.id)).map((player) => player.name).join(', ')}.` : ' No one received a vote.'}</span></div></div><div class="info-banner success" style="margin-top:18px"><strong>Your outcome</strong><span>${esc(myOutcome)}</span></div><p>Here’s what everyone was holding after the night’s swaps.</p><div class="reveal-grid">${room.players.map((player) => `<div class="reveal-card"><div class="reveal-card-top"><span class="player-icon">${player.icon}</span>${esc(player.name)}${results?.deadIds?.includes(player.id) ? ' · VOTED OUT' : ''}</div><div class="reveal-role"><span>Dealt</span><strong>${esc(player.startCard)}</strong></div>${player.startCard === 'Doppelganger' ? `<div class="reveal-role"><span>Copied</span><strong>${esc(player.effectiveRole || 'Doppelganger')}</strong></div>` : ''}<div class="reveal-role"><span>Final card</span><strong>${esc(player.card)}</strong></div>${player.artifactName ? `<div class="reveal-role"><span>Artifact</span><strong>${esc(player.artifactName)}</strong></div>` : ''}${player.artifactRole || player.transformedRole ? `<div class="reveal-role"><span>Vote role</span><strong>${esc(player.artifactRole || player.transformedRole)}</strong></div>` : ''}<div class="reveal-role"><span>Outcome</span><strong>${esc(player.outcome || 'Pending')}</strong></div><div class="reveal-role"><span>Votes</span><strong>${results?.voteCounts?.[player.id] || 0}</strong></div></div>`).join('')}</div>${results?.alphaReserves?.length ? `<div class="side-rule">Hidden Alpha Wolf card${results.alphaReserves.length > 1 ? 's' : ''}: ${results.alphaReserves.map(esc).join(', ')}</div>` : ''}<div class="action-footer"><span class="note">Center cards: ${results?.center?.map((card, index) => `#${index + 1} ${esc(card)}`).join(' · ')}</span>${room.viewer.kind === 'host' ? '<button class="btn" data-action="play-again">Play again with this village →</button>' : ''}</div>`;
+  return `<div class="eyebrow">Phase 08 · Reveal</div><h2>The village decides.</h2><div class="result-banner"><span style="font-size:25px">${results?.deadIds?.length ? '☠' : '✦'}</span><div><strong>${esc(results?.winner)}</strong><span>${results?.deadIds?.length ? `Voted out: ${room.players.filter((player) => results.deadIds.includes(player.id)).map((player) => player.name).join(', ')}.` : 'No one received enough votes to be eliminated.'}</span></div></div><div class="info-banner success" style="margin-top:18px"><strong>Your outcome</strong><span>${esc(myOutcome)}</span></div><p>Final cards after all swaps.</p><div class="reveal-grid">${room.players.map((player) => `<div class="reveal-card"><div class="reveal-card-top"><span class="player-icon">${player.icon}</span>${esc(player.name)}${results?.deadIds?.includes(player.id) ? ' · VOTED OUT' : ''}</div><div class="reveal-role"><span>Dealt</span><strong>${esc(player.startCard)}</strong></div>${player.startCard === 'Doppelganger' || player.startCard === 'Copycat' ? `<div class="reveal-role"><span>Copied</span><strong>${esc(player.effectiveRole || player.startCard)}</strong></div>` : ''}<div class="reveal-role"><span>Final card</span><strong>${esc(player.card)}</strong></div>${results?.marksUsed ? `<div class="reveal-role"><span>Final mark</span><strong>${esc(player.mark)}</strong></div>` : ''}${player.artifactName ? `<div class="reveal-role"><span>Artifact</span><strong>${esc(player.artifactName)}</strong></div>` : ''}${player.artifactRole || player.transformedRole ? `<div class="reveal-role"><span>Vote role</span><strong>${esc(player.artifactRole || player.transformedRole)}</strong></div>` : ''}<div class="reveal-role"><span>Outcome</span><strong>${esc(player.outcome || 'Pending')}</strong></div><div class="reveal-role"><span>Votes</span><strong>${results?.voteCounts?.[player.id] || 0}</strong></div></div>`).join('')}</div>${results?.alphaReserves?.length ? `<div class="side-rule">Hidden Alpha Wolf card${results.alphaReserves.length > 1 ? 's' : ''}: ${results.alphaReserves.map(esc).join(', ')}</div>` : ''}<div class="action-footer"><span class="note">Center cards: ${results?.center?.map((card, index) => `#${index + 1} ${esc(card)}`).join(' · ')}</span>${room.viewer.kind === 'host' ? '<button class="btn" data-action="play-again">Play again with this village →</button>' : ''}</div>`;
 }
 function renderGame() {
   if (room.stage === 'roles') return `${phaseBar()}${renderRoleReveal()}`;
@@ -443,17 +493,18 @@ function renderGame() {
 function renderHostLobby() {
   const valid = room.host.totalCards === room.host.cardsNeeded && room.host.playerCount >= 3;
   const dayRoles = new Set(['Hunter', 'Tanner', 'Villager', 'Bodyguard']);
-  const duskRoles = new Set(['Vampire', 'Master', 'Count', 'Renfield', 'Diseased', 'Cupid', 'Instigator', 'Priest', 'Assassin', 'Apprentice Assassin']);
+  const duskRoles = new Set(['Copycat', 'Doppelganger', 'Vampire', 'Master', 'Count', 'Renfield', 'Diseased', 'Cupid', 'Instigator', 'Priest', 'Assassin', 'Apprentice Assassin']);
   const renderRoleRows = (roles) => roles.map(([name, color, icon]) => `<div class="role-row"><span class="role-title"><i class="role-dot" style="--role-color:${color}"></i><span>${icon}</span>${esc(name)}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="-1" aria-label="Remove ${esc(name)}">−</button><span class="role-qty">${room.roles[name]}</span><button data-action="role-change" data-role="${esc(name)}" data-delta="1" aria-label="Add ${esc(name)}">+</button></div>`).join('');
   const renderRoleGroup = (label, roles) => label === 'Night'
     ? `<section class="role-phase"><h3>Dusk</h3>${renderRoleRows(ROLES.filter(([name]) => duskRoles.has(name)))}</section><section class="role-phase"><h3>Night</h3>${renderRoleRows(roles)}</section>`
     : `<section class="role-phase"><h3>${label}</h3>${renderRoleRows(roles)}</section>`;
   const nightRoles = ROLES.filter(([name]) => !dayRoles.has(name) && !duskRoles.has(name));
   const dayRoleList = ROLES.filter(([name]) => dayRoles.has(name));
-  return `<div class="room-head"><div><div class="eyebrow">Moderator lobby · You are not a player</div><h1>Build your village.</h1><p>${room.host.cardsNeeded - 3} players · choose exactly ${room.host.cardsNeeded} cards, including three center cards.</p></div><div class="code-box"><div><small>Join code</small><strong>${room.code}</strong></div><button class="btn btn-quiet" data-action="copy-link" aria-label="Copy invite link">▣</button></div></div><div class="room-layout"><section class="section-panel panel"><div class="section-head"><h2>Players</h2><span class="count-label">${room.players.length} / 12</span></div>${playerList()}<button class="btn btn-quiet" style="margin-top:15px;width:100%" data-action="copy-link">Copy invite link</button><div class="lobby-foot">Players join from their own devices. Your moderator screen never receives a player card.</div></section><aside class="deck-panel panel"><div class="eyebrow">The cards</div><h2>Choose your roles.</h2><p class="deck-help">One card per player, plus three in the center.</p><div class="deck-total"><span>Cards selected</span><strong>${room.host.totalCards} / ${room.host.cardsNeeded}</strong></div><div class="role-list">${renderRoleGroup('Night', nightRoles)}${renderRoleGroup('Day', dayRoleList)}</div>${renderArtifactPool()}<div class="deck-status ${valid ? '' : 'invalid'}">${valid ? 'Deck is ready to deal.' : room.host.totalCards < room.host.cardsNeeded ? `${room.host.cardsNeeded - room.host.totalCards} more cards needed.` : room.host.totalCards > room.host.cardsNeeded ? 'Remove cards to match the player count.' : 'At least 3 players are needed.'}</div><div class="room-actions"><button class="btn" data-action="start-game" ${valid ? '' : 'disabled'}>Deal the cards →</button><button class="btn btn-quiet" data-action="leave">Leave room</button></div></aside></div>`;
+  return `<div class="room-head"><div><div class="eyebrow">Moderator lobby · You are not a player</div><h1>Build your village.</h1><p>${room.host.cardsNeeded - 3} players · choose exactly ${room.host.cardsNeeded} cards, including three center cards.</p></div><div class="code-box"><div><small>Join code</small><strong>${room.code}</strong></div><button class="btn btn-quiet" data-action="copy-link" aria-label="Copy invite link">▣</button></div></div><div class="room-layout"><section class="section-panel panel"><div class="section-head"><h2>Players</h2><span class="count-label">${room.players.length} / 12</span></div>${playerList()}<button class="btn btn-quiet" style="margin-top:15px;width:100%" data-action="copy-link">Copy invite link</button>${renderBotControls()}<form class="bot-form" data-form="add-bot"><h3>Add an AI player</h3><input class="input" name="name" maxlength="18" placeholder="AI name (optional)"><div class="bot-form-options"><select name="personality" aria-label="AI personality"><option>Friendly</option><option>Analytical</option><option>Bold</option><option>Quiet</option></select><select name="difficulty" aria-label="AI decision difficulty"><option>Casual</option><option selected>Balanced</option><option>Sharp</option></select><select name="talkativeness" aria-label="AI chat frequency"><option>Quiet</option><option selected>Balanced</option><option>Chatty</option></select></div><button class="btn btn-quiet" type="submit" ${room.players.length >= 12 ? 'disabled' : ''}>Add AI player</button></form><div class="lobby-foot">AI players receive private roles, act, vote, and chat like other seats. Your moderator screen never receives a player card.</div></section><aside class="deck-panel panel"><div class="eyebrow">The cards</div><h2>Choose your roles.</h2><p class="deck-help">One card per player, plus three in the center.</p><div class="deck-total"><span>Cards selected</span><strong>${room.host.totalCards} / ${room.host.cardsNeeded}</strong></div><div class="role-list">${renderRoleGroup('Night', nightRoles)}${renderRoleGroup('Day', dayRoleList)}</div>${renderArtifactPool()}<div class="deck-status ${valid ? '' : 'invalid'}">${valid ? 'Deck is ready to deal.' : room.host.totalCards < room.host.cardsNeeded ? `${room.host.cardsNeeded - room.host.totalCards} more cards needed.` : room.host.totalCards > room.host.cardsNeeded ? 'Remove cards to match the player count.' : 'At least 3 players are needed.'}</div><div class="room-actions"><button class="btn" data-action="start-game" ${valid ? '' : 'disabled'}>Deal the cards →</button><button class="btn btn-quiet" data-action="save-village">Save village</button><button class="btn btn-quiet" data-action="leave">Leave room</button></div></aside></div>`;
 }
 function renderRoom() {
-  return room.stage === 'lobby' ? room.viewer.kind === 'host' ? renderHostLobby() : renderLobby() : renderGame();
+  const page = room.stage === 'lobby' ? room.viewer.kind === 'host' ? renderHostLobby() : renderLobby() : renderGame();
+  return `${page}${renderChat()}`;
 }
 
 app.addEventListener('click', async (event) => {
@@ -463,8 +514,9 @@ app.addEventListener('click', async (event) => {
   if (action === 'create-room') {
     try {
       const response = await emit('room:create', { accountToken });
-      history.replaceState({}, '', '/moderator');
-      saveSession({ code: response.room.code, kind: 'host', token: response.token }); room = response.room; render();
+      saveSession({ code: response.room.code, kind: 'host', token: response.hostKey });
+      history.replaceState({}, '', `/moderator/${response.room.code}/${response.hostKey}`);
+      room = response.room; render();
     } catch (error) { toast(error.message); }
   } else if (action === 'choose-icon') {
     const form = button.closest('form');
@@ -532,6 +584,11 @@ app.addEventListener('click', async (event) => {
     connectSession();
   } else if (action === 'role-change') {
     await act('host:adjust-role', { role: button.dataset.role, delta: Number(button.dataset.delta) });
+  } else if (action === 'remove-bot') {
+    await act('host:remove-bot', { playerId: button.dataset.id });
+  } else if (action === 'chat-toggle') {
+    const setting = button.dataset.setting;
+    await act('host:chat-settings', { setting, enabled: !room.chatSettings?.[setting] });
   } else if (action === 'kick-player') {
     await act('host:kick-player', { playerId: button.dataset.id });
   } else if (action === 'toggle-icon-picker') {
@@ -545,6 +602,10 @@ app.addEventListener('click', async (event) => {
     const max = button.dataset.max === '2' ? 2 : 1;
     if (selectedIds.includes(button.dataset.id)) selectedIds = selectedIds.filter((id) => id !== button.dataset.id);
     else if (selectedIds.length < max) selectedIds.push(button.dataset.id);
+    else selectedIds[selectedIds.length - 1] = button.dataset.id;
+    render();
+  } else if (action === 'phase-question-select') {
+    selectedIds = [button.dataset.id];
     render();
   } else if (action === 'info-mark-select' || action === 'info-role-select') {
     if (action === 'info-mark-select') infoMarkTarget = button.dataset.id;
@@ -554,7 +615,8 @@ app.addEventListener('click', async (event) => {
     if (action === 'night-answer') { selectedIds = [button.dataset.id]; room.own.nightAnswer = button.dataset.id; }
     else if (action === 'select-vote') selectedIds = [button.dataset.id];
     else if (selectedIds.includes(button.dataset.id)) selectedIds = selectedIds.filter((id) => id !== button.dataset.id);
-    else if (room.stage === 'night' && ['Troublemaker', 'Gremlin'].includes(room.action?.role) && selectedIds.length < 2) selectedIds.push(button.dataset.id);
+    else if (room.stage === 'night' && ['Troublemaker', 'Gremlin', 'Paranormal Investigator'].includes(room.action?.role) && selectedIds.length < 2) selectedIds.push(button.dataset.id);
+    else if (room.stage === 'night' && ['Troublemaker', 'Gremlin', 'Paranormal Investigator'].includes(room.action?.role)) selectedIds[selectedIds.length - 1] = button.dataset.id;
     else selectedIds = [button.dataset.id];
     render();
   } else if (action === 'select-center') {
@@ -563,6 +625,7 @@ app.addEventListener('click', async (event) => {
     else {
       const amount = room.action?.role === 'Seer' && seerMode === 'center' ? 2 : 1;
       if (selectedCenter.length < amount) selectedCenter.push(index);
+      else selectedCenter[selectedCenter.length - 1] = index;
     }
     render();
   } else if (action === 'seer-mode') {
@@ -575,6 +638,10 @@ app.addEventListener('click', async (event) => {
     const targetId = selectedIds[0]; selectedIds = []; await act('player:setup', { targetId });
   } else if (action === 'submit-copycat') {
     const centerIndex = selectedCenter[0]; selectedCenter = []; await act('player:copycat-setup', { centerIndex });
+  } else if (action === 'submit-phase-question') {
+    const targetId = selectedIds[0];
+    await act('player:phase-question', { targetId });
+    selectedIds = [];
   } else if (action === 'submit-dusk') {
     const payload = room.action?.role === 'Cupid' ? { targetIds: [...selectedIds] } : { targetId: selectedIds[0] };
     selectedIds = []; await act('player:dusk-action', payload);
@@ -621,11 +688,51 @@ app.addEventListener('click', async (event) => {
   }
 });
 
+app.addEventListener('input', (event) => {
+  if (event.target.id !== 'chat-message') return;
+  chatDraft = event.target.value;
+  const sendButton = event.target.form?.querySelector('[type="submit"]');
+  if (sendButton) sendButton.disabled = !chatDraft.trim();
+});
+
+app.addEventListener('change', async (event) => {
+  const botSetting = event.target.closest('[data-bot-setting]');
+  if (botSetting) {
+    await act('host:bot-settings', { playerId: botSetting.dataset.playerId, setting: botSetting.dataset.setting, value: botSetting.value });
+    return;
+  }
+  if (event.target.id === 'chat-scope') {
+    chatScope = event.target.value;
+    if (chatScope === 'whisper' && !chatTargetId) chatTargetId = room.players.find((player) => player.id !== room.viewer.playerId)?.id || '';
+    render();
+  } else if (event.target.id === 'chat-target') chatTargetId = event.target.value;
+});
+
 app.addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = event.target;
   const data = new FormData(form);
-  if (form.dataset.form === 'account-auth') {
+  if (form.dataset.form === 'chat') {
+    const scope = String(data.get('scope') || 'public');
+    const text = String(data.get('text') || '').trim();
+    const targetId = scope === 'whisper' ? String(data.get('targetId') || '') : '';
+    if (!text) return;
+    try {
+      await emit('chat:send', { scope, text, targetId });
+      chatDraft = '';
+      const input = app.querySelector('#chat-message');
+      if (input) input.value = '';
+    } catch (error) {
+      chatDraft = text;
+      render();
+      toast(error.message);
+    }
+  } else if (form.dataset.form === 'add-bot') {
+    try {
+      await emit('host:add-bot', { name: data.get('name'), settings: { personality: data.get('personality'), difficulty: data.get('difficulty'), talkativeness: data.get('talkativeness') } });
+      form.reset();
+    } catch (error) { toast(error.message); }
+  } else if (form.dataset.form === 'account-auth') {
     try {
       const endpoint = accountMode === 'signup' ? '/api/account/signup' : '/api/account/login';
       const body = Object.fromEntries(data.entries());
@@ -672,7 +779,10 @@ app.addEventListener('submit', async (event) => {
     if (!icon) return toast('Choose an available icon.');
     try {
       const response = await emit('room:join', { code: pendingCode, name, icon, playerKey, accountToken });
-      saveSession({ code: response.room.code, kind: 'player', token: response.playerKey || response.token }); room = response.room; pendingCode = ''; render();
+      const key = response.playerKey || response.token;
+      saveSession({ code: response.room.code, kind: 'player', token: key });
+      history.replaceState({}, '', `/join/${response.room.code}/${key}`);
+      room = response.room; pendingCode = ''; render();
     } catch (error) { toast(error.message); }
   } else if (form.dataset.form === 'change-icon') {
     const icon = String(data.get('icon') || '');
@@ -689,7 +799,13 @@ app.addEventListener('submit', async (event) => {
   }
 });
 
-try { session = JSON.parse(localStorage.getItem('nightshift-session') || 'null'); } catch { session = null; }
+const roomRoute = location.pathname.match(/^\/(join|moderator)\/(\d{6})\/([A-Z0-9]+)\/?$/);
+if (roomRoute) session = { code: roomRoute[2], kind: roomRoute[1] === 'moderator' ? 'host' : 'player', token: roomRoute[3] };
 render();
+if (session) connectSession();
+else if (/^\/join\/\d{6}\/?$/.test(location.pathname)) {
+  pendingCode = location.pathname.match(/\d{6}/)?.[0] || '';
+  emit('room:preview', { code: pendingCode }).then(({ preview }) => { roomPreview = preview; render(); }).catch((error) => toast(error.message));
+}
 if (accountToken) refreshAccount();
 if (location.pathname === '/account') fetch('/api/account/catalog').then((response) => response.json()).then((payload) => { accountCatalog = payload.icons || []; render(); }).catch(() => {});

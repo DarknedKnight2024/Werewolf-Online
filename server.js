@@ -18,6 +18,7 @@ const MARKS = ['Clarity', 'Vampire', 'Fear', 'Bat', 'Disease', 'Love', 'Traitor'
 const MARK_LABELS = Object.fromEntries(MARKS.map((mark) => [mark, `Mark of ${mark}`]));
 const COPY_ROLES = new Set(['Copycat', 'Doppelganger']);
 const NIGHT_ACTIVE_ROLES = new Set(['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Seer', 'Apprentice Seer', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Revealer', 'Curator']);
+const NIGHT_QUESTION_ROLES = new Set(['Sentinel', 'Marksman', 'Hunter', 'Tanner', 'Villager', 'Bodyguard']);
 const VAMPIRE_ROLES = new Set(['Vampire', 'Master', 'Count', 'Renfield']);
 const ICONS = ['🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🐝', '🦚', '🦔', '🐿️', '🦓', '🐙', '🪲', '🦋', '🐢', '🐬', '🦈', '🐧', '🐼', '🦩', '🦜', '🐊', '🦦', '🦥', '🦭', '🌲', '🍂', '🌻', '🪷', '🌵', '🌊', '🍄', '🌿', '🌼', '🌹', '🪻', '🌱', '🌙', '🌘', '☀️', '⚡', '❄️', '🌈', '🪐', '✨', '🌟', '☄️', '🌑', '🌕', '🔮', '🗝️', '🧿', '🪬', '🛡️', '⚔️', '👑', '🧪', '👻', '🧙', '🧚', '🧜', '🧸', '🦖', '🦄', '🐉', '🤖', '🪼', '🦂', '🕷️', '🎭', '🪭', '🪄', '🎃'];
 const ICON_THEMES = [
@@ -52,6 +53,9 @@ const QUESTIONS = [
   'Who would you want beside you in a suspiciously quiet village?',
   'Who has the most convincing poker face?',
 ];
+const BOT_PERSONALITIES = ['Friendly', 'Analytical', 'Bold', 'Quiet'];
+const BOT_TALKATIVENESS = ['Quiet', 'Balanced', 'Chatty'];
+const BOT_DIFFICULTIES = ['Casual', 'Balanced', 'Sharp'];
 const rooms = new Map();
 const savedVillages = new Map();
 const accounts = new Map();
@@ -252,8 +256,8 @@ function playerOutcome(room, player) {
   if (!room || room.stage !== 'results' || !room.winnerTeam) return null;
   if ((room.votesForDiseased || []).includes(player.id)) return 'You lose';
   if (trueRole(player) === 'Assassin') return player.assassinTargetId && room.deadIds?.includes(player.assassinTargetId) ? 'You win' : 'You lose';
-  if (room.winnerTeam === 'tanner') return trueRole(player) === 'Tanner' ? 'You win' : 'You lose';
-  let wins = teamForPlayer(player) === room.winnerTeam;
+  if (trueRole(player) === 'Tanner') return room.winningTeams?.includes('tanner') ? 'You win' : 'You lose';
+  let wins = room.winningTeams?.includes(teamForPlayer(player)) || teamForPlayer(player) === room.winnerTeam;
   if (player.mark === 'Traitor' && teamSize(room, teamForPlayer(player)) > 1) wins = !wins;
   return wins ? 'You win' : 'You lose';
 }
@@ -273,6 +277,61 @@ function roleQuestion(action, room) {
   const fearedAction = player?.mark === 'Fear' && NIGHT_ACTIVE_ROLES.has(action.role);
   return fearedAction || ['Sentinel', 'Copycat', 'Doppelganger', 'Dream Wolf', 'Minion', 'Mason', 'Insomniac', 'Hunter', 'Tanner', 'Villager', 'Bodyguard', 'Marksman'].includes(action.role)
     || (action.role === 'Werewolf' && room.players.filter(packRole).length > 1);
+}
+function normalizeBotSettings(settings = {}) {
+  return {
+    personality: BOT_PERSONALITIES.includes(settings.personality) ? settings.personality : 'Friendly',
+    talkativeness: BOT_TALKATIVENESS.includes(settings.talkativeness) ? settings.talkativeness : 'Balanced',
+    difficulty: BOT_DIFFICULTIES.includes(settings.difficulty) ? settings.difficulty : 'Balanced',
+  };
+}
+function botChatText(player, context) {
+  const personality = player.botSettings?.personality || 'Friendly';
+  const messages = {
+    Friendly: {
+      hello: ['Good to see everyone. I am still piecing things together.', 'That is an interesting point. I am keeping an open mind.'],
+      whisper: ['Thanks for telling me. I will think it over.', 'I hear you. I am not ready to commit yet.'],
+      discussion: ['I have a few clues, but I want to hear everyone first.', 'Let us compare notes before we settle on a suspect.'],
+      result: ['Good game, everyone. That was fun.', 'Nice round. I would play another.'],
+    },
+    Analytical: {
+      hello: ['I am comparing claims with the information available.', 'I will avoid jumping to conclusions until the votes make sense.'],
+      whisper: ['Noted. I will compare that with the public claims.', 'That changes one possibility, but it is not enough by itself.'],
+      discussion: ['We should separate what was observed from what is inferred.', 'The vote pattern may be more useful than a confident claim.'],
+      result: ['Good game. The vote pattern was informative.', 'Round complete. I am ready to test another theory.'],
+    },
+    Bold: {
+      hello: ['Someone is bluffing. I just have to work out who.', 'I have a suspect, but I want to hear the defense first.'],
+      whisper: ['That is a strong claim. I will remember who said it.', 'Interesting. I may use that when I make my case.'],
+      discussion: ['I am ready to make a call. Who has the clearest contradiction?', 'Let us hear one concrete reason before we vote.'],
+      result: ['Good game. Rematch?', 'That was a close one. Another round.'],
+    },
+    Quiet: {
+      hello: ['I am listening for now.', 'I will share what I know when it is useful.'],
+      whisper: ['Understood. I will keep that in mind.', 'Thanks. I am listening.'],
+      discussion: ['I am still listening.', 'I have nothing certain to add yet.'],
+      result: ['Good game.', 'Another round sometime.'],
+    },
+  };
+  const options = messages[personality]?.[context] || messages.Friendly.hello;
+  return options[crypto.randomInt(options.length)];
+}
+function appendChat(room, message) {
+  room.chat ||= [];
+  room.chat.push({ id: crypto.randomUUID(), sentAt: timestamp(), ...message });
+  room.chat = room.chat.slice(-100);
+}
+function botChatMessage(room, player, context, recipientId = null) {
+  const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
+  if (recipientId ? !settings.whispersEnabled : !settings.publicEnabled) return;
+  appendChat(room, {
+    scope: recipientId ? 'whisper' : 'public',
+    fromId: player.id,
+    fromName: player.name,
+    toId: recipientId,
+    text: botChatText(player, context),
+    isBot: true,
+  });
 }
 function persist() {
   writeEncryptedStore(roomFile, [...rooms.values()]);
@@ -332,12 +391,15 @@ function snapshot(room, session) {
     code: room.code,
     stage: room.stage,
     roles: room.roles,
+    duskUsed: room.duskUsed,
     question: room.question,
     duskQuestion: room.duskQuestion,
     nightQuestion: room.nightQuestion,
     artifactPool: session.kind === 'host' ? room.artifactPool : undefined,
+    chatSettings: room.chatSettings || { publicEnabled: true, whispersEnabled: true },
+    chat: (room.chat || []).filter((message) => message.scope === 'public' || session.kind === 'player' && (message.fromId === user?.id || message.toId === user?.id)).slice(-60),
     publicEvents: room.publicEvents || [],
-    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
+    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, isBot: Boolean(player.isBot), botSettings: hostView && player.isBot ? player.botSettings : undefined, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.isBot || player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
     viewer: { kind: session.kind, playerId: session.playerId || null, name: user?.name || 'Moderator' },
     action: room.stage === 'setup' ? {
       ...(session.kind === 'host' ? {} : setupAction ? { role: setupAction.role, questionOnly: Boolean(setupAction.questionOnly), submitted: Boolean(room.setupActions?.[user.id]) } : {}),
@@ -390,7 +452,7 @@ function snapshot(room, session) {
       alphaReserves: room.stage === 'results' ? room.alphaReserves : null,
       setupMatchCount: setupCounts[user.id] || 0,
     } : null,
-    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: Object.keys(room.setupActions || {}).length, roleReadyCount: Object.keys(room.roleReady || {}).length, sentinelDone: Object.keys(room.shields || {}).length, markDone: Object.keys(room.markReady || {}).length, nightDone: Object.keys(room.nightActions || {}).length, informationDone: Object.keys(room.infoDone || {}).length, hostKey: room.hostKey } : null,
+    host: session.kind === 'host' ? { playerCount: room.players.length, totalCards: roleCount(room), cardsNeeded: room.players.length + 3, setupDone: Object.keys(room.setupActions || {}).length, roleReadyCount: Object.keys(room.roleReady || {}).length, sentinelDone: Object.keys(room.shields || {}).length, markDone: Object.keys(room.markReady || {}).length, informationDone: Object.keys(room.infoDone || {}).length, hostKey: room.hostKey } : null,
   };
 }
 function ackError(ack, message) { if (typeof ack === 'function') ack({ error: message }); }
@@ -423,9 +485,7 @@ function actorsForRole(room, role) {
   return room.players.filter((player) => effectiveRole(player) === role);
 }
 function activeDuskAction(room, playerId) {
-  const exact = room.duskQueue?.find((entry) => entry.actorId === playerId && !room.duskActions?.[entry.key]);
-  if (exact) return exact;
-  return room.duskQueue?.find((entry) => entry.actorIds?.includes(playerId) && !room.duskActions?.[entry.key]);
+  return room.duskQueue?.find((entry) => entry.actorId === playerId && !room.duskActions?.[entry.key]);
 }
 function duskQueue(room) {
   const copied = [];
@@ -455,7 +515,6 @@ function setupQueue(room) {
   if (!setupActors.length) return [];
   return room.players.flatMap((player) => {
     if (COPY_ROLES.has(player.startCard)) return [{ actorId: player.id, role: player.startCard }];
-    if (player.startCard === 'Sentinel') return [];
     return [{ actorId: player.id, role: 'Question', questionOnly: true }];
   });
 }
@@ -465,23 +524,200 @@ function nightQueue(room) {
   for (const role of NIGHT_ORDER) {
     const actors = actorsForRole(room, role);
     for (const player of actors) {
+      if (NIGHT_QUESTION_ROLES.has(role)) continue;
       const action = { role, actorId: player.id, copied: COPY_ROLES.has(player.startCard) };
       if (action.copied) copied.push(action); else regular.push(action);
     }
   }
   const roleActions = [...copied, ...regular];
-  if (!roleActions.length) return [];
   const roleActorIds = new Set(roleActions.map((entry) => entry.actorId));
   const questions = room.players.filter((player) => !roleActorIds.has(player.id)).map((player) => ({ role: 'Question', actorId: player.id, questionOnly: true }));
   const queue = [...roleActions, ...questions];
   room.alphaReserves = Object.fromEntries(queue.filter((action) => action.role === 'Alpha Wolf').map((action) => [action.actorId, 'Werewolf']));
   return queue;
 }
+function randomBotTarget(room, bot, predicate = () => true) {
+  const choices = room.players.filter((player) => player.id !== bot.id && predicate(player));
+  return choices.length ? choices[crypto.randomInt(choices.length)] : null;
+}
+function finishSentinel(room, bot, target) {
+  if (!target) return;
+  room.shields ||= {};
+  target.shielded = true;
+  room.shields[bot.id] = target.id;
+  const sentinels = room.players.filter((player) => player.startCard === 'Sentinel');
+  if (sentinels.every((player) => room.shields[player.id])) startSetup(room);
+}
+function runBotSentinels(room) {
+  if (room.stage !== 'sentinel') return;
+  for (const bot of room.players.filter((player) => player.isBot && player.startCard === 'Sentinel' && !room.shields?.[player.id])) {
+    finishSentinel(room, bot, randomBotTarget(room));
+    if (room.stage !== 'sentinel') return;
+  }
+}
+function runBotSetup(room) {
+  for (const action of room.setupQueue || []) {
+    const bot = playerById(room, action.actorId);
+    if (!bot?.isBot || room.setupActions?.[bot.id]) continue;
+    if (action.role === 'Copycat') {
+      const centerIndex = crypto.randomInt(room.center.length);
+      bot.setupTarget = `center:${centerIndex}`;
+      bot.effectiveRole = room.center[centerIndex];
+      bot.seenCards ||= [];
+      bot.seenCards.push({ name: `center card #${centerIndex + 1}`, role: room.center[centerIndex] });
+      bot.events.push(`Copied center card #${centerIndex + 1}: ${room.center[centerIndex]}.`);
+    } else if (action.role === 'Doppelganger') {
+      const target = randomBotTarget(room, bot, (player) => !player.shielded);
+      if (target) {
+        bot.setupTarget = target.id;
+        bot.effectiveRole = target.startCard;
+        recordCardView(bot, target, target.startCard, 'Copied');
+      }
+    } else {
+      const answer = randomBotTarget(room, bot);
+      bot.events.push(`Because you don't have a Setup role, here is a question to keep you occupied: ${room.question} You chose ${answer?.name || 'no one'}.`);
+    }
+    finishSetupAction(room, bot.id);
+    if (room.stage !== 'setup') return;
+  }
+}
+function pendingVampireTarget(room) {
+  return room.duskActions?.['vampire-mark']?.data?.targetId || null;
+}
+function botDuskData(room, action, bot) {
+  if (action.questionOnly) {
+    const answer = randomBotTarget(room, bot);
+    bot.events.push(`Because you don't have a Dusk role, here is a question to keep you occupied: ${room.duskQuestion} You chose ${answer?.name || 'no one'}.`);
+    return { targetId: answer?.id };
+  }
+  if (action.key === 'vampire-mark') {
+    const target = randomBotTarget(room, bot, (player) => !VAMPIRE_ROLES.has(effectiveRole(player)) && player.mark !== 'Vampire');
+    return target ? { targetId: target.id } : { skip: true };
+  }
+  if (action.role === 'Count') {
+    const vampireTargetId = pendingVampireTarget(room);
+    const target = randomBotTarget(room, bot, (player) => player.id !== vampireTargetId);
+    return target ? { targetId: target.id } : { skip: true };
+  }
+  if (action.role === 'Diseased') {
+    const index = room.players.findIndex((player) => player.id === bot.id);
+    return { targetId: room.players[(index + (crypto.randomInt(2) ? 1 : room.players.length - 1)) % room.players.length].id };
+  }
+  if (action.role === 'Cupid') {
+    const targets = room.players.filter((player) => player.id !== bot.id).slice(0, 2);
+    return targets.length === 2 ? { targetIds: targets.map((player) => player.id) } : { skip: true };
+  }
+  if (action.role === 'Renfield') return {};
+  if (action.role === 'Priest') {
+    const target = randomBotTarget(room, bot);
+    return target ? { targetId: target.id } : { skip: true };
+  }
+  if (['Instigator', 'Assassin'].includes(action.role)) {
+    const target = randomBotTarget(room, bot);
+    return target ? { targetId: target.id } : { skip: true };
+  }
+  return { skip: true };
+}
+function runBotDusk(room) {
+  for (const action of room.duskQueue || []) {
+    const bot = playerById(room, action.actorId);
+    if (!bot?.isBot || room.duskActions[action.key]) continue;
+    room.duskActions[action.key] = { data: botDuskData(room, action, bot) };
+  }
+  if (room.duskQueue?.length && Object.keys(room.duskActions).length === room.duskQueue.length) resolveDusk(room);
+}
+function botNightData(room, action, bot) {
+  if (roleQuestion(action, room)) {
+    const target = randomBotTarget(room, bot);
+    return { targetId: target?.id };
+  }
+  const target = randomBotTarget(room, bot, (player) => !player.shielded);
+  const twoTargets = room.players.filter((player) => player.id !== bot.id && !player.shielded).slice(0, 2);
+  switch (action.role) {
+    case 'Werewolf': return { centerIndex: crypto.randomInt(room.center.length) };
+    case 'Mystic Wolf':
+    case 'Alpha Wolf':
+    case 'Revealer':
+    case 'Curator': return target ? { targetId: target.id } : { pass: true };
+    case 'Seer': return target ? { mode: 'player', targetId: target.id } : { mode: 'center', centerIndices: [0, 1] };
+    case 'Apprentice Seer':
+    case 'Drunk': return { centerIndex: crypto.randomInt(room.center.length) };
+    case 'Robber':
+    case 'Pickpocket': return target ? { targetId: target.id } : { pass: true };
+    case 'Witch': return target ? { centerIndex: crypto.randomInt(room.center.length), targetId: target.id } : { pass: true };
+    case 'Paranormal Investigator':
+    case 'Troublemaker': return twoTargets.length === 2 ? { targetIds: twoTargets.map((player) => player.id) } : { pass: true };
+    case 'Gremlin': return twoTargets.length === 2 ? { mode: crypto.randomInt(2) ? 'marks' : 'cards', targetIds: twoTargets.map((player) => player.id) } : { mode: 'marks', targetIds: room.players.filter((player) => player.id !== bot.id).slice(0, 2).map((player) => player.id) };
+    case 'Village Idiot': return { direction: crypto.randomInt(2) ? 'left' : 'right' };
+    default: return { pass: true };
+  }
+}
+function runBotNight(room) {
+  for (const action of room.nightQueue || []) {
+    const bot = playerById(room, action.actorId);
+    if (!bot?.isBot || room.nightActions[bot.id]) continue;
+    const data = botNightData(room, action, bot);
+    if (action.questionOnly || roleQuestion(action, room)) room.nightActions[bot.id] = { targetId: data.targetId };
+    else room.nightActions[bot.id] = { data };
+  }
+  if (room.nightQueue?.length && Object.keys(room.nightActions).length === room.nightQueue.length) resolveNight(room);
+}
+function startDiscussion(room) {
+  room.stage = 'discussion';
+  room.discussionSeconds = 300;
+  room.timerRunning = false;
+  const bots = room.players.filter((player) => player.isBot);
+  for (const bot of bots) {
+    const chance = ({ Quiet: 12, Balanced: 38, Chatty: 72 }[bot.botSettings?.talkativeness] || 0);
+    if (crypto.randomInt(100) < chance) botChatMessage(room, bot, 'discussion');
+  }
+}
+function runBotInformation(room) {
+  for (const bot of room.players.filter((player) => player.isBot)) {
+    const action = room.infoQueue?.find((entry) => entry.actorId === bot.id);
+    if (action) {
+      const markTarget = randomBotTarget(room, bot);
+      const roleTarget = randomBotTarget(room, bot, (player) => player.id !== markTarget?.id);
+      if (markTarget && roleTarget) {
+        bot.seenMarks ||= [];
+        bot.seenMarks.push({ name: markTarget.name, mark: markTarget.mark });
+        recordCardView(bot, roleTarget, trueRole(roleTarget));
+        room.infoActions[bot.id] = true;
+      }
+    }
+    room.infoDone[bot.id] = true;
+  }
+  if (room.players.every((player) => room.infoDone[player.id])) startDiscussion(room);
+}
+function botVoteTarget(room, bot) {
+  const enemies = (player) => {
+    if (teamForPlayer(bot) === 'wolves') return !wolfTeamRole(player);
+    if (teamForPlayer(bot) === 'vampires') return !vampireTeamRole(player);
+    if (trueRole(bot) === 'Tanner') return true;
+    return wolfTeamRole(player) || vampireTeamRole(player);
+  };
+  const knownThreats = new Set((bot.seenCards || []).filter((entry) => ['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Vampire', 'Master', 'Count'].includes(entry.role)).map((entry) => room.players.find((player) => player.name === entry.name)?.id).filter(Boolean));
+  const candidates = room.players.filter((player) => player.id !== bot.id);
+  const difficulty = bot.botSettings?.difficulty || 'Balanced';
+  const threatWeight = ({ Casual: 1, Balanced: 2, Sharp: 3 })[difficulty];
+  const evidenceWeight = ({ Casual: 2, Balanced: 6, Sharp: 12 })[difficulty];
+  const scores = new Map(candidates.map((player) => [player.id, (enemies(player) ? threatWeight : 0) + (knownThreats.has(player.id) ? evidenceWeight : 0) + (player.mark === 'Traitor' ? 1 : 0) + crypto.randomInt(2)]));
+  candidates.sort((left, right) => scores.get(right.id) - scores.get(left.id));
+  return candidates[0];
+}
+function runBotVotes(room) {
+  for (const bot of room.players.filter((player) => player.isBot && !room.votes?.[player.id])) {
+    const target = botVoteTarget(room, bot);
+    if (target) room.votes[bot.id] = target.id;
+  }
+  if (Object.keys(room.votes || {}).length === room.players.length) finishVotes(room);
+}
 function startSetup(room) {
   room.setupQueue = setupQueue(room);
   room.setupActions = {};
   room.stage = 'setup';
   if (!room.setupQueue.length) startDusk(room);
+  else runBotSetup(room);
 }
 function finishSetupAction(room, playerId) {
   room.setupActions[playerId] = true;
@@ -489,7 +725,8 @@ function finishSetupAction(room, playerId) {
 }
 function startMark(room) {
   room.stage = 'mark';
-  room.markReady = {};
+  room.markReady = Object.fromEntries(room.players.filter((player) => player.isBot).map((player) => [player.id, true]));
+  if (room.players.every((player) => room.markReady[player.id])) startNight(room);
 }
 function startDusk(room) {
   room.duskQueue = duskQueue(room);
@@ -497,6 +734,7 @@ function startDusk(room) {
   room.duskUsed = room.duskQueue.length > 0;
   if (!room.duskUsed) return startNight(room);
   room.stage = 'dusk';
+  runBotDusk(room);
 }
 function startNight(room) {
   room.nightQueue = nightQueue(room);
@@ -504,11 +742,13 @@ function startNight(room) {
   room.stage = 'night';
   room.players.forEach((player) => { player.nightAnswer = null; player.selectedIds = []; player.selectedCenter = []; });
   if (!room.nightQueue.length) resolveNight(room);
+  else runBotNight(room);
 }
 function resolveDusk(room) {
   for (const action of room.duskQueue) {
     if (action.questionOnly) continue;
     const data = room.duskActions[action.key]?.data || {};
+    if (data.skip) continue;
     const actor = playerById(room, action.actorId);
     if (action.key === 'vampire-mark') {
       playerById(room, data.targetId).mark = 'Vampire';
@@ -537,8 +777,7 @@ function resolveDusk(room) {
       actor.assassinTargetId = data.targetId;
     }
   }
-  room.stage = 'mark';
-  room.markReady = {};
+  startMark(room);
 }
 function resolveNight(room) {
   room.publicEvents = [];
@@ -690,6 +929,7 @@ function resolveNight(room) {
   room.infoDone = {};
   room.infoActions = {};
   room.infoQueue = actorsForRole(room, 'Marksman').map((player) => ({ actorId: player.id, role: 'Marksman' }));
+  runBotInformation(room);
 }
 function validatePlayerTurn(room, playerId, stage) {
   if (room.stage !== stage) throw new Error('That action is not available now.');
@@ -740,18 +980,28 @@ function finishVotes(room) {
   const vampiresAlive = room.players.some((player) => !deadIds.has(player.id) && vampireTeamRole(player));
   room.voteCounts = counts;
   room.deadIds = finalDead.map((player) => player.id);
-  const tannerCanOverride = Boolean(tanner && !wolvesAlive && !vampiresAlive);
-  room.winnerTeam = tannerCanOverride ? 'tanner' : wolvesAlive ? 'wolves' : vampiresAlive ? 'vampires' : 'village';
-  room.winner = tannerCanOverride
-    ? `${tanner.name} wins as the Tanner.`
+  room.winningTeams = [];
+  if (wolvesAlive) room.winningTeams.push('wolves');
+  if (vampiresAlive) room.winningTeams.push('vampires');
+  if (tanner) room.winningTeams.push('tanner');
+  if (!wolvesAlive && !vampiresAlive && !tanner) room.winningTeams.push('village');
+  room.winnerTeam = room.winningTeams[0] || 'village';
+  const factionWins = room.winningTeams.filter((team) => team !== 'tanner').map((team) => ({
+    wolves: 'The werewolf team also wins.',
+    vampires: 'The vampire team also wins.',
+    village: 'The village wins.',
+  })[team]);
+  room.winner = tanner
+    ? `${tanner.name} was voted out as the Tanner. The village loses.${factionWins.length ? ` ${factionWins.join(' ')}` : ''}`
     : wolvesAlive
       ? dead.length
         ? 'The werewolf team wins. The village missed.'
         : 'The werewolf team wins. Nobody was voted out and wolves remain.'
       : vampiresAlive
         ? 'The vampire team wins. A vampire remains among the players.'
-      : 'The village wins. No werewolves remain among the players.';
+        : 'The village wins. No werewolves remain among the players.';
   room.stage = 'results';
+  for (const bot of room.players.filter((player) => player.isBot)) botChatMessage(room, bot, 'result');
   const rewardedAccounts = new Set();
   for (const player of room.players) {
     if (!player.accountId || rewardedAccounts.has(player.accountId)) continue;
@@ -916,7 +1166,7 @@ io.on('connection', (socket) => {
     roles.Werewolf = 1;
     roles.Seer = 1;
     roles.Villager = 2;
-    const room = { code, hostTokenHash: tokenHash(hostToken), hostKey, hostAccountId: account?.id || null, players: [], roles, artifactPool: ARTIFACTS.filter((artifact) => !UNAVAILABLE_ARTIFACTS.has(artifact)).slice(0, 3), stage: 'lobby', question, duskQuestion, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
+    const room = { code, hostTokenHash: tokenHash(hostToken), hostKey, hostAccountId: account?.id || null, players: [], roles, artifactPool: ARTIFACTS.filter((artifact) => !UNAVAILABLE_ARTIFACTS.has(artifact)).slice(0, 3), chatSettings: { publicEnabled: true, whispersEnabled: true }, chat: [], stage: 'lobby', question, duskQuestion, nightQuestion, createdAt: timestamp(), updatedAt: timestamp(), hostConnected: true };
     rooms.set(code, room);
     persist();
     if (account) recordAccountActivity(account.id, 'Moderator room created');
@@ -1029,6 +1279,83 @@ io.on('connection', (socket) => {
     if (changed) updateRoom(room);
   }));
 
+  socket.on('host:add-bot', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('AI players can only be added in the lobby.');
+    if (room.players.length >= 12) throw new Error('A village can have at most 12 players.');
+    const icon = ICONS.find((candidate) => !room.players.some((player) => player.icon === candidate));
+    if (!icon) throw new Error('No player icons are available for another AI player.');
+    const botSettings = normalizeBotSettings(payload.settings);
+    const name = String(payload.name || '').trim().slice(0, 18) || `${botSettings.personality} AI ${room.players.filter((player) => player.isBot).length + 1}`;
+    room.players.push({ id: crypto.randomUUID(), name, icon, isBot: true, botSettings, connected: true, activeTab: false });
+    const fixedCards = roleCount(room) - room.roles.Villager;
+    room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
+    updateRoom(room);
+  }));
+
+  socket.on('host:remove-bot', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('AI players can only be removed in the lobby.');
+    const player = playerById(room, String(payload.playerId || ''));
+    if (!player?.isBot) throw new Error('Choose an AI player to remove.');
+    room.players = room.players.filter((entry) => entry.id !== player.id);
+    const fixedCards = roleCount(room) - room.roles.Villager;
+    room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
+    updateRoom(room);
+  }));
+
+  socket.on('host:bot-settings', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('AI settings are locked after the cards are dealt.');
+    const player = playerById(room, String(payload.playerId || ''));
+    if (!player?.isBot) throw new Error('Choose an AI player to configure.');
+    if (!['personality', 'talkativeness', 'difficulty'].includes(payload.setting)) throw new Error('Choose a valid AI setting.');
+    const normalized = normalizeBotSettings({ ...player.botSettings, [payload.setting]: payload.value });
+    if (normalized[payload.setting] !== payload.value) throw new Error('Choose a valid AI setting value.');
+    player.botSettings = normalized;
+    updateRoom(room);
+  }));
+
+  socket.on('host:chat-settings', acked((payload) => {
+    const room = requireHost(socket);
+    if (!['publicEnabled', 'whispersEnabled'].includes(payload.setting) || typeof payload.enabled !== 'boolean') throw new Error('Choose a valid chat setting.');
+    room.chatSettings ||= { publicEnabled: true, whispersEnabled: true };
+    room.chatSettings[payload.setting] = payload.enabled;
+    updateRoom(room);
+  }));
+
+  socket.on('chat:send', acked((payload) => {
+    const session = socket.data.session;
+    if (!session) throw new Error('Join a room before chatting.');
+    const room = rooms.get(session.code);
+    if (!room) throw new Error('Room no longer exists.');
+    const sender = session.kind === 'player' ? playerById(room, session.playerId) : null;
+    const scope = payload.scope === 'whisper' ? 'whisper' : 'public';
+    const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
+    if (scope === 'public' && !settings.publicEnabled) throw new Error('Public chat is disabled by the moderator.');
+    if (scope === 'whisper' && !settings.whispersEnabled) throw new Error('Whispers are disabled by the moderator.');
+    const text = String(payload.text || '').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').trim().slice(0, 240);
+    if (!text) throw new Error('Write a message before sending.');
+    const senderId = sender?.id || 'moderator';
+    room.chatRate ||= {};
+    const now = Date.now();
+    if (now - (room.chatRate[senderId] || 0) < 450) throw new Error('Wait a moment before sending another message.');
+    let recipient = null;
+    if (scope === 'whisper') {
+      if (!sender) throw new Error('Only players can whisper to another player.');
+      recipient = playerById(room, String(payload.targetId || ''));
+      if (!recipient || recipient.id === sender.id) throw new Error('Choose another player to whisper to.');
+    }
+    room.chatRate[senderId] = now;
+    appendChat(room, { scope, fromId: senderId, fromName: sender?.name || 'Moderator', toId: recipient?.id || null, text, isBot: false });
+    if (recipient?.isBot) botChatMessage(room, recipient, 'whisper', sender.id);
+    else if (scope === 'public') {
+      const respondingBots = room.players.filter((player) => player.isBot && ({ Quiet: 8, Balanced: 28, Chatty: 60 }[player.botSettings?.talkativeness] || 0) > crypto.randomInt(100));
+      if (respondingBots.length) botChatMessage(room, respondingBots[crypto.randomInt(respondingBots.length)], 'hello');
+    }
+    updateRoom(room);
+  }));
+
   socket.on('host:kick-player', acked((payload) => {
     const room = requireHost(socket);
     if (room.stage !== 'lobby') throw new Error('Players can only be removed from the lobby.');
@@ -1079,7 +1406,7 @@ io.on('connection', (socket) => {
   socket.on('host:start', acked(() => {
     const room = requireHost(socket);
     if (room.stage !== 'lobby') throw new Error('This game has already started.');
-    const activePlayers = room.players.filter((player) => player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000);
+    const activePlayers = room.players.filter((player) => player.isBot || player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000);
     if (activePlayers.length < 3 || activePlayers.length > 12) throw new Error('At least 3 online players are needed, and no more than 12 can play.');
     if (roleCount(room) !== activePlayers.length + 3) throw new Error('Choose exactly one card per online player, plus three center cards.');
     if (room.roles.Curator > 0 && room.artifactPool.length < 3) throw new Error('Select at least three available artifacts for the Curator.');
@@ -1094,9 +1421,16 @@ io.on('connection', (socket) => {
     room.center = centerCards;
     room.setupIndex = 0;
     room.stage = 'roles';
-    room.roleReady = {};
+    room.roleReady = Object.fromEntries(activePlayers.filter((player) => player.isBot).map((player) => [player.id, true]));
     room.shields = {};
     room.publicEvents = [];
+    if (activePlayers.every((player) => player.isBot)) {
+      if (activePlayers.some((player) => player.startCard === 'Sentinel')) {
+        room.stage = 'sentinel';
+        runBotSentinels(room);
+      } else startSetup(room);
+      room.setupIndex = 0;
+    }
     updateRoom(room);
   }));
 
@@ -1156,7 +1490,10 @@ io.on('connection', (socket) => {
     room.roleReady ||= {};
     room.roleReady[player.id] = true;
     if (room.players.every((entry) => room.roleReady[entry.id])) {
-      if (room.players.some((entry) => entry.startCard === 'Sentinel')) room.stage = 'sentinel';
+      if (room.players.some((entry) => entry.startCard === 'Sentinel')) {
+        room.stage = 'sentinel';
+        runBotSentinels(room);
+      }
       else startSetup(room);
       room.setupIndex = 0;
     }
@@ -1166,16 +1503,10 @@ io.on('connection', (socket) => {
   socket.on('player:sentinel-shield', acked((payload) => {
     const { room, player } = requirePlayer(socket);
     if (room.stage !== 'sentinel' || player.startCard !== 'Sentinel') throw new Error('You are not choosing a Sentinel shield now.');
-    room.shields ||= {};
-    if (room.shields[player.id]) throw new Error('Your shield is already placed.');
     const target = playerById(room, payload.targetId);
     if (!target) throw new Error('Choose a player to shield.');
-    target.shielded = true;
-    room.shields[player.id] = target.id;
-    const sentinels = room.players.filter((entry) => entry.startCard === 'Sentinel');
-    if (sentinels.every((entry) => room.shields[entry.id])) {
-      startSetup(room);
-    }
+    if (room.shields?.[player.id]) throw new Error('Your shield is already placed.');
+    finishSentinel(room, player, target);
     updateRoom(room);
   }));
 
@@ -1330,9 +1661,7 @@ io.on('connection', (socket) => {
     room.infoDone ||= {};
     room.infoDone[player.id] = true;
     if (room.players.every((entry) => room.infoDone[entry.id])) {
-      room.stage = 'discussion';
-      room.discussionSeconds = 300;
-      room.timerRunning = false;
+      startDiscussion(room);
     }
     updateRoom(room);
   }));
@@ -1380,6 +1709,7 @@ io.on('connection', (socket) => {
     stopTimer(room.code);
     room.votes = {};
     room.stage = 'voting';
+    runBotVotes(room);
     updateRoom(room);
   }));
 
@@ -1432,7 +1762,7 @@ io.on('connection', (socket) => {
       savedAt: timestamp(),
       hostKey: room.hostKey,
       roles: { ...room.roles },
-      players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, key: player.key, connected: player.connected })),
+      players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, key: player.key, connected: player.connected, isBot: Boolean(player.isBot), botSettings: player.isBot ? player.botSettings : undefined })),
       artifactPool: [...(room.artifactPool || [])],
       question: room.question,
       nightQuestion: room.nightQuestion,
@@ -1458,7 +1788,7 @@ io.on('connection', (socket) => {
     if (session.kind === 'host') room.hostConnected = false;
     else {
       const player = playerById(room, session.playerId);
-      if (player) player.connected = false;
+      if (player) { player.connected = false; player.activeTab = false; }
     }
     updateRoom(room);
   });

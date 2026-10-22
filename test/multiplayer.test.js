@@ -14,7 +14,7 @@ let serverUrl;
 let temporaryData;
 const sockets = [];
 const iconSet = ['🌙', '🦊', '🐺', '🦉', '🦇', '🐈', '🦌', '🐸', '🦝', '🐻', '🐝', '🦚'];
-const roleOrder = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Marksman', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard'];
+const roleOrder = ['Sentinel', 'Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Minion', 'Mason', 'Seer', 'Apprentice Seer', 'Marksman', 'Robber', 'Witch', 'Paranormal Investigator', 'Pickpocket', 'Troublemaker', 'Village Idiot', 'Gremlin', 'Drunk', 'Insomniac', 'Revealer', 'Curator', 'Hunter', 'Tanner', 'Villager', 'Bodyguard', 'Question'];
 
 function pause(milliseconds) { return new Promise((resolve) => setTimeout(resolve, milliseconds)); }
 async function freePort() {
@@ -37,6 +37,9 @@ async function connectClient() {
   const client = io(serverUrl, { reconnection: false, transports: ['websocket'] });
   client.latestRoom = null;
   client.on('room:update', (room) => { client.latestRoom = room; });
+  client.presenceTimer = setInterval(() => {
+    if (client.latestRoom?.viewer.kind === 'player') client.emit('player:presence', { active: true });
+  }, 2000);
   await once(client, 'connect');
   sockets.push(client);
   return client;
@@ -94,29 +97,51 @@ async function playToVoting(clients, roles) {
     await request(sentinel, 'player:sentinel-shield', { targetId: protectedPlayer.id });
     await waitForRoom(clients, (room) => room.stage !== 'sentinel' || room.players.some((player) => player.shielded), 'Sentinel shield');
   }
-  if (host.latestRoom.stage === 'setup') {
-    const activePlayers = players.filter((client) => ['Doppelganger', 'Copycat'].includes(client.testRole) && !client.latestRoom.own.setupTarget);
-    await Promise.all(activePlayers.map((client) => {
-      const room = host.latestRoom;
-      const player = room.players.find((entry) => entry.id === client.latestRoom.viewer.playerId);
-      if (client.testRole === 'Copycat') return request(client, 'player:copycat-setup', { centerIndex: 0 });
-      const target = room.players.find((entry) => entry.id !== player.id && !entry.shielded);
-      return request(client, 'player:setup', { targetId: target.id });
-    }));
-    await waitForRoom(clients, (room) => ['dusk', 'mark', 'night'].includes(room.stage), 'Dusk after simultaneous setup');
+  while (host.latestRoom.stage === 'setup') {
+    const actor = players.find((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted);
+    if (!actor) {
+      await until(() => host.latestRoom.stage !== 'setup' || players.some((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted), 'pending Setup action');
+      continue;
+    }
+    const room = host.latestRoom;
+    const actorId = actor.latestRoom.viewer.playerId;
+    if (actor.latestRoom.action.questionOnly) {
+      const targetId = room.players.find((entry) => entry.id !== actorId).id;
+      await request(actor, 'player:phase-question', { targetId });
+    } else if (actor.testRole === 'Copycat') {
+      await request(actor, 'player:copycat-setup', { centerIndex: 0 });
+    } else {
+      const target = room.players.find((entry) => entry.id !== actorId && !entry.shielded);
+      try { await request(actor, 'player:setup', { targetId: target.id }); }
+      catch (error) { throw new Error(`${actor.testRole} setup: ${error.message}`); }
+    }
+    await until(() => actor.latestRoom.stage !== 'setup' || actor.latestRoom.action?.submitted, 'Setup action submission');
   }
 
   while (host.latestRoom.stage === 'dusk') {
-    const duskDoneBefore = host.latestRoom.host.duskDone;
-    const assigned = players.filter((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted);
-    if (!assigned.length) throw new Error('Dusk has no active players but did not advance.');
+    const nextActor = () => {
+      const pending = players.filter((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted);
+      return pending.find((client) => client.latestRoom.action.role === 'Vampire')
+        || pending.find((client) => client.latestRoom.action.role === 'Count')
+        || pending[0];
+    };
+    let actor = nextActor();
+    if (!actor) {
+      await until(() => host.latestRoom.stage !== 'dusk' || players.some((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted), 'pending Dusk action');
+      continue;
+    }
     let vampireTargetId = null;
-    for (const actor of assigned) {
+    while (actor) {
       const action = actor.latestRoom.action;
       const actorId = actor.latestRoom.viewer.playerId;
       const available = players.filter((client) => client.latestRoom.viewer.playerId !== actorId);
       let payload = {};
-      if (action.role === 'Vampire') {
+      if (action.questionOnly) {
+        await request(actor, 'player:phase-question', { targetId: available[0].latestRoom.viewer.playerId });
+        await until(() => actor.latestRoom.stage !== 'dusk' || actor.latestRoom.action?.key !== action.key, 'next private Dusk turn');
+        actor = nextActor();
+        continue;
+      } else if (action.role === 'Vampire') {
         const target = available.find((client) => !['Vampire', 'Master', 'Count', 'Renfield'].includes(client.testRole));
         if (!target) throw new Error('No non-vampire target is available in the Dusk test deck.');
         vampireTargetId = target.latestRoom.viewer.playerId;
@@ -138,8 +163,9 @@ async function playToVoting(clients, roles) {
       try { await request(actor, 'player:dusk-action', payload); }
       catch (error) { throw new Error(`${action.role} for ${actor.latestRoom.viewer.name}: ${error.message}`); }
       await until(() => actor.latestRoom.stage !== 'dusk' || actor.latestRoom.action?.key !== action.key, 'next private Dusk turn');
+      actor = nextActor();
     }
-    await until(() => players.every((client) => client.latestRoom.stage !== 'dusk' || client.latestRoom.action?.done > duskDoneBefore), 'Dusk action resolution');
+    if (host.latestRoom.stage === 'dusk') await until(() => host.latestRoom.stage !== 'dusk' || players.some((client) => client.latestRoom.action?.role && !client.latestRoom.action.submitted), 'Dusk action resolution');
   }
 
   if (host.latestRoom.stage === 'mark') {
@@ -150,8 +176,10 @@ async function playToVoting(clients, roles) {
   }
 
   await waitForRoom(clients, (room) => room.stage === 'night', 'night phase');
-  const nightActionTotal = host.latestRoom.action.total;
+  const nightActionTotal = players.length;
   assert.equal(host.latestRoom.own, null, 'moderator receives no night action');
+  assert.equal('total' in host.latestRoom.action, false, 'moderator does not receive a Night action count');
+    assert.equal('nightDone' in host.latestRoom.host, false, 'moderator does not see Night readiness totals');
   assert.ok(players.every((client) => client.latestRoom.own.card === null && client.latestRoom.own.startCard === null), 'roles are hidden after the reveal phase');
     const actions = players.map((client) => client.latestRoom.action).filter((action) => action?.role);
     assert.equal(actions.length, nightActionTotal, 'each queued night role gets its own turn');
@@ -192,7 +220,6 @@ async function playToVoting(clients, roles) {
   });
   await Promise.all(submissions);
   await waitForRoom(clients, (room) => room.stage === 'information', 'all simultaneous night actions resolved');
-  assert.equal(host.latestRoom.host.nightDone, nightActionTotal, 'moderator sees night readiness count');
   assert.ok(players.every((client) => client.latestRoom.own.card === null && client.latestRoom.own.startCard === null), 'information phase hides each player role and final card');
 
   assert.equal(host.latestRoom.stage, 'information');
@@ -233,7 +260,7 @@ before(async () => {
 });
 
 after(() => {
-  for (const client of sockets) client.close();
+  for (const client of sockets) { clearInterval(client.presenceTimer); client.close(); }
   serverProcess?.kill('SIGTERM');
   if (temporaryData) fs.rmSync(temporaryData, { recursive: true, force: true });
 });
@@ -290,6 +317,66 @@ test('moderator can kick a player from the lobby and notify their device', async
   assert.equal(host.latestRoom.players.some((entry) => entry.id === playerId), false);
   assert.equal(host.latestRoom.players.length, 1);
   assert.equal(host.latestRoom.host.cardsNeeded, 4);
+});
+
+test('moderator can independently disable public chat and whispers', async () => {
+  const clients = await Promise.all(Array.from({ length: 4 }, () => connectClient()));
+  const [host, first, second, third] = clients;
+  await beginRoom(clients);
+  await request(host, 'host:chat-settings', { setting: 'whispersEnabled', enabled: false });
+  await assert.rejects(request(first, 'chat:send', { scope: 'whisper', targetId: second.latestRoom.viewer.playerId, text: 'Secret message' }), /Whispers are disabled/);
+  await request(host, 'host:chat-settings', { setting: 'whispersEnabled', enabled: true });
+  await request(first, 'chat:send', { scope: 'public', text: 'Hello village' });
+  await waitForRoom(clients, (room) => room.chat?.some((message) => message.text === 'Hello village'), 'public chat delivery');
+  await request(second, 'chat:send', { scope: 'whisper', targetId: third.latestRoom.viewer.playerId, text: 'Private clue' });
+  await waitForRoom([second, third], (room) => room.chat?.some((message) => message.text === 'Private clue'), 'private whisper delivery');
+  assert.ok(second.latestRoom.chat.some((message) => message.text === 'Private clue'));
+  assert.ok(third.latestRoom.chat.some((message) => message.text === 'Private clue'));
+  assert.equal(first.latestRoom.chat.some((message) => message.text === 'Private clue'), false);
+  assert.equal(host.latestRoom.chat.some((message) => message.text === 'Private clue'), false);
+  await request(host, 'host:add-bot', { name: 'Friendly AI', settings: { personality: 'Friendly', talkativeness: 'Quiet' } });
+  const bot = host.latestRoom.players.find((player) => player.isBot);
+  await request(third, 'chat:send', { scope: 'whisper', targetId: bot.id, text: 'Any thoughts?' });
+  await waitForRoom([third], (room) => room.chat?.some((message) => message.isBot && message.scope === 'whisper'), 'AI private reply');
+  assert.ok(third.latestRoom.chat.some((message) => message.isBot && message.fromId === bot.id));
+  assert.equal(first.latestRoom.chat.some((message) => message.fromId === bot.id), false);
+  assert.equal(host.latestRoom.chat.some((message) => message.fromId === bot.id), false);
+  await request(host, 'host:chat-settings', { setting: 'publicEnabled', enabled: false });
+  await assert.rejects(request(third, 'chat:send', { scope: 'public', text: 'This should be blocked' }), /Public chat is disabled/);
+});
+
+test('AI players act, vote, and chat after the game', async () => {
+  const [host] = await Promise.all([connectClient()]);
+  await beginRoom([host]);
+  const personalities = ['Friendly', 'Analytical', 'Bold'];
+  for (const personality of personalities) {
+    await request(host, 'host:add-bot', { settings: { personality, difficulty: 'Sharp', talkativeness: 'Chatty' } });
+  }
+  assert.equal(host.latestRoom.players.length, 3);
+  assert.equal(host.latestRoom.host.totalCards, 6);
+  assert.ok(host.latestRoom.players.every((player) => player.isBot && !('card' in player)), 'AI roles remain private during the lobby');
+  await request(host, 'host:start');
+  await waitForRoom([host], (room) => room.stage === 'discussion', 'AI players to finish role phases');
+  await request(host, 'host:begin-voting');
+  await waitForRoom([host], (room) => room.stage === 'results', 'AI players to vote');
+  assert.ok(host.latestRoom.players.every((player) => player.isBot && player.startCard), 'each AI receives and reveals a role normally');
+  assert.equal(Object.keys(host.latestRoom.results.voteCounts).length, 3);
+  assert.ok(host.latestRoom.chat.some((message) => message.isBot && message.scope === 'public'), 'AI players post a personality-based postgame message');
+  assert.equal(host.latestRoom.players[0].botSettings.difficulty, 'Sharp', 'the moderator can configure AI settings');
+});
+
+test('AI players complete Dusk marks and Night actions automatically', async () => {
+  const [host] = await Promise.all([connectClient()]);
+  await beginRoom([host]);
+  for (let index = 0; index < 4; index += 1) await request(host, 'host:add-bot', { name: `Bot ${index + 1}`, settings: { personality: 'Analytical' } });
+  await configureDeck(host, { Vampire: 1, Count: 1, Seer: 1, Villager: 4 });
+  await request(host, 'host:start');
+  await waitForRoom([host], (room) => room.stage === 'discussion', 'AI Dusk, Mark, Night, and Information phases');
+  await request(host, 'host:begin-voting');
+  await waitForRoom([host], (room) => room.stage === 'results', 'AI vote results');
+  assert.equal(host.latestRoom.results.marksUsed, true);
+  assert.ok(host.latestRoom.players.some((player) => player.mark === 'Vampire'));
+  assert.ok(host.latestRoom.players.some((player) => player.mark === 'Fear'));
 });
 
 test('accounts persist player seats and villages without exposing them publicly', async () => {
@@ -461,7 +548,7 @@ test('expanded night roles all submit and resolve in configured order', async ()
     'Paranormal Investigator': 1,
   });
   assert.equal(host.latestRoom.stage, 'voting');
-  assert.equal(host.latestRoom.host.nightDone, players.length);
+  assert.equal('nightDone' in host.latestRoom.host, false, 'moderator does not receive Night readiness totals');
   assert.ok(players.every((client) => client.latestRoom.own.card === null), 'night results do not restore the dealt role');
 });
 
@@ -476,6 +563,33 @@ test('Dusk marks resolve before Night and new mark roles complete their actions'
   assert.ok(players.some((client) => client.testRole === 'Vampire'));
   assert.ok(players.some((client) => client.testRole === 'Count'));
   assert.ok(players.some((client) => client.testRole === 'Marksman'));
+  assert.ok(players.find((client) => client.testRole === 'Pickpocket').latestRoom.own.notes.some((note) => note.includes("Because you don't have a Dusk role")));
+});
+
+test('games without Dusk skip Mark and do not reveal marks', async () => {
+  const clients = [await connectClient(), await connectClient(), await connectClient(), await connectClient()];
+  const [host, ...players] = clients;
+  await beginRoom(clients);
+  await playToVoting(clients, { Werewolf: 1, Seer: 1, Villager: 4 });
+  assert.equal(host.latestRoom.duskUsed, false);
+  assert.ok(players.filter((client) => !['Werewolf', 'Seer'].includes(client.testRole)).every((client) => client.latestRoom.own.notes.some((note) => note.includes("Because you don't have a Night role"))));
+  const target = players[0];
+  await Promise.all(players.map((client) => request(client, 'player:vote', { targetId: client === target ? players[1].latestRoom.viewer.playerId : target.latestRoom.viewer.playerId })));
+  await waitForRoom(clients, (snapshot) => snapshot.stage === 'results', 'no-Dusk reveal');
+  assert.equal(host.latestRoom.results.marksUsed, false);
+  assert.ok(host.latestRoom.players.every((player) => !('mark' in player)), 'the reveal omits marks when Dusk did not run');
+});
+
+test('Setup questions are recorded for players without a Setup role', async () => {
+  const clients = await Promise.all(Array.from({ length: 13 }, () => connectClient()));
+  const [host, ...players] = clients;
+  await beginRoom(clients);
+  await playToVoting(clients, {
+    Sentinel: 4, Doppelganger: 4, Werewolf: 1, 'Mystic Wolf': 1, 'Alpha Wolf': 1,
+    'Dream Wolf': 1, Seer: 1, Robber: 1, 'Paranormal Investigator': 1,
+  });
+  const questionPlayers = players.filter((client) => client.testRole !== 'Doppelganger');
+  assert.ok(questionPlayers.every((client) => client.latestRoom.own.notes.some((note) => note.includes("Because you don't have a Setup role"))));
 });
 
 test('a voted-out Tanner does not override surviving wolves or vampires', async () => {
@@ -489,10 +603,15 @@ test('a voted-out Tanner does not override surviving wolves or vampires', async 
   await Promise.all([
     request(wolfClient, 'player:vote', { targetId: tannerClient.latestRoom.viewer.playerId }),
     request(villagerClient, 'player:vote', { targetId: tannerClient.latestRoom.viewer.playerId }),
+    request(tannerClient, 'player:vote', { targetId: villagerClient.latestRoom.viewer.playerId }),
   ]);
   await waitForRoom(clients, (snapshot) => snapshot.stage === 'results', 'Tanner elimination result');
   assert.equal(host.latestRoom.results.winnerTeam, 'wolves');
-  assert.equal(host.latestRoom.results.winner, 'The werewolf team wins. The village missed.');
+  assert.deepEqual(host.latestRoom.results.winningTeams, ['wolves', 'tanner']);
+  assert.match(host.latestRoom.results.winner, /The village loses\. The werewolf team also wins\./);
+  assert.equal(tannerClient.latestRoom.own.outcome, 'You win');
+  assert.equal(wolfClient.latestRoom.own.outcome, 'You win');
+  assert.equal(villagerClient.latestRoom.own.outcome, 'You lose');
 });
 
 function playersWithRole(clients, role) {
