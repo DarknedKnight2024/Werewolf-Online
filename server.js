@@ -472,7 +472,7 @@ function snapshot(room, session) {
     chatSettings: room.chatSettings || { publicEnabled: true, whispersEnabled: true },
     chat: (room.chat || []).filter((message) => message.scope === 'public' || session.kind === 'host' || session.kind === 'player' && (message.fromId === user?.id || message.toId === user?.id)).slice(-60),
     publicEvents: room.publicEvents || [],
-    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, isBot: Boolean(player.isBot), aiCode: hostView && player.isBot ? player.aiCode : undefined, botSettings: hostView && player.isBot ? player.botSettings : undefined, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.isBot || player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
+    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, isBot: Boolean(player.isBot), aiCode: hostView && player.isBot ? player.aiCode : undefined, botSettings: hostView && player.isBot ? player.botSettings : undefined, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.isBot || player.connected), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
     viewer: { kind: session.kind, playerId: session.playerId || null, name: user?.name || 'Moderator' },
     action: room.stage === 'setup' ? {
       ...(session.kind === 'host' ? {} : setupAction ? { role: setupAction.role, questionOnly: Boolean(setupAction.questionOnly), submitted: Boolean(room.setupActions?.[user.id]) } : {}),
@@ -1381,9 +1381,9 @@ io.on('connection', (socket) => {
     const { room, player } = requirePlayer(socket);
     if (player.socketId !== socket.id) return;
     const active = payload.active === true;
-    const changed = player.activeTab !== active;
+    const changed = player.activeTab !== active || !player.connected;
     player.activeTab = active;
-    player.connected = player.activeTab;
+    player.connected = true;
     player.lastPresenceAt = Date.now();
     if (changed) updateRoom(room);
   }));

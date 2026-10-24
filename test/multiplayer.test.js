@@ -319,6 +319,19 @@ test('moderator can kick a player from the lobby and notify their device', async
   assert.equal(host.latestRoom.host.cardsNeeded, 4);
 });
 
+test('player stays online while the game page is connected and goes offline on disconnect', async () => {
+  const clients = await Promise.all(Array.from({ length: 2 }, () => connectClient()));
+  const [host, player] = clients;
+  await beginRoom(clients);
+  const playerId = player.latestRoom.viewer.playerId;
+  await request(player, 'player:presence', { active: false });
+  await waitForRoom([host], (room) => room.players.find((entry) => entry.id === playerId)?.connected, 'connected game page status');
+  assert.equal(host.latestRoom.players.find((entry) => entry.id === playerId).connected, true);
+  clearInterval(player.presenceTimer);
+  player.close();
+  await waitForRoom([host], (room) => room.players.find((entry) => entry.id === playerId)?.connected === false, 'player socket disconnect status');
+});
+
 test('moderator can independently disable public chat and whispers', async () => {
   const clients = await Promise.all(Array.from({ length: 4 }, () => connectClient()));
   const [host, first, second, third] = clients;

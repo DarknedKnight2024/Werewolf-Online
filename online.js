@@ -123,7 +123,7 @@ function clearSession() {
   session = null; room = null; pendingCode = '';
   history.replaceState({}, '', location.pathname); render();
 }
-function updatePresence(active = !document.hidden && document.hasFocus()) {
+function updatePresence(active = !document.hidden) {
   if (!session || session.kind !== 'player' || !socket.connected) return;
   emit('player:presence', { active }).catch(() => {});
 }
@@ -132,8 +132,6 @@ function connectSession() {
   emit('room:resume', { ...session, accountToken }).then(({ room: snapshot }) => { room = snapshot; render(); updatePresence(); }).catch(() => clearSession());
 }
 socket.on('connect', connectSession);
-window.addEventListener('focus', () => updatePresence());
-window.addEventListener('blur', () => updatePresence());
 document.addEventListener('visibilitychange', () => updatePresence());
 setInterval(() => updatePresence(), 2000);
 socket.on('disconnect', () => { if (room) render(); });
@@ -244,7 +242,7 @@ function renderIconCategories(reserved = [], current = '') {
 }
 function playerList() {
   if (!room.players.length) return '<div class="empty">No players yet. Copy the invite link to bring your village together.</div>';
-  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${player.isBot ? `<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> BETA</span>${room.viewer.kind === 'host' ? `<span class="host-tag">${esc(player.aiCode || 'AI')}</span>` : ''}` : ''}${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.isBot ? 'AI player' : player.connected ? 'Connected' : 'Offline'}"></span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? player.isBot ? `<button class="kick-btn" data-action="remove-bot" data-id="${esc(player.id)}" aria-label="Remove AI ${esc(player.name)}" title="Remove AI player">×</button>` : `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
+  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${player.isBot ? `<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> AI BETA</span>${room.viewer.kind === 'host' ? `<span class="host-tag">${esc(player.aiCode || 'AI')}</span>` : ''}` : ''}${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.isBot ? 'AI player' : player.connected ? 'Online' : 'Offline'}"></span><span class="connection-status ${player.isBot ? 'ai' : player.connected ? 'online' : 'offline'}">${player.isBot ? 'AI' : player.connected ? 'Online' : 'Offline'}</span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? player.isBot ? `<button class="kick-btn" data-action="remove-bot" data-id="${esc(player.id)}" aria-label="Remove AI ${esc(player.name)}" title="Remove AI player">×</button>` : `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
 }
 function renderBotIconSelect(bot) {
   const reservedIcons = room.players.filter((player) => player.id !== bot.id).map((player) => player.icon);
@@ -261,6 +259,7 @@ function renderBotControls() {
 function renderChat() {
   const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
   const ownId = room.viewer.kind === 'player' ? room.viewer.playerId : null;
+  const botsPresent = room.players.some((player) => player.isBot);
   const whisperTargets = room.players.filter((player) => player.id !== ownId && !player.isBot);
   const messages = room.chat || [];
   const messageMarkup = messages.map((message) => {
@@ -271,10 +270,9 @@ function renderChat() {
       ? `Whisper · ${sender?.name || message.fromName} → ${recipient?.name || 'player'}`
       : `Whisper ${message.fromId === ownId ? 'to' : 'from'} ${(message.fromId === ownId ? recipient : sender)?.name || 'AI player'}` : 'Everyone';
     const removeButton = room.viewer.kind === 'host' ? `<button class="btn btn-quiet" data-action="chat-remove" data-id="${esc(message.id)}" aria-label="Remove chat message">Remove</button>` : '';
-    const botBadge = message.isBot ? '<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> BETA</span>' : '';
+    const botBadge = message.isBot ? '<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> AI BETA</span>' : '';
     return `<div class="chat-message ${whisper ? 'whisper' : ''} ${message.isBot ? 'bot-message' : ''}"><div class="chat-message-meta"><strong>${esc(message.fromName)}</strong>${botBadge}<span>${label}</span><time>${new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>${removeButton}</div><p>${esc(message.text)}</p></div>`;
   }).join('');
-  const botsPresent = room.players.some((player) => player.isBot);
   const publicControl = botsPresent
     ? '<span>Public chat required for AI</span>'
     : `<span>Public chat ${settings.publicEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="publicEnabled">${settings.publicEnabled ? 'Disable' : 'Enable'}</button>`;
@@ -285,7 +283,7 @@ function renderChat() {
   if (!canSendPublic && canWhisper) chatScope = 'whisper';
   if (canWhisper && !whisperTargets.some((player) => player.id === chatTargetId)) chatTargetId = whisperTargets[0].id;
   const composer = canSendPublic || canWhisper ? `<form class="chat-form" data-form="chat"><select name="scope" id="chat-scope" aria-label="Message audience" ${!canWhisper ? 'disabled' : ''}><option value="public" ${chatScope === 'public' ? 'selected' : ''} ${!canSendPublic ? 'disabled' : ''}>Everyone</option>${canWhisper ? `<option value="whisper" ${chatScope === 'whisper' ? 'selected' : ''}>Whisper</option>` : ''}</select>${canWhisper ? `<select name="targetId" id="chat-target" aria-label="Whisper recipient" ${chatScope !== 'whisper' ? 'hidden' : ''}>${whisperTargets.map((player) => `<option value="${esc(player.id)}" ${chatTargetId === player.id ? 'selected' : ''}>${esc(player.name)}</option>`).join('')}</select>` : ''}<textarea id="chat-message" name="text" maxlength="240" rows="2" placeholder="${chatScope === 'whisper' ? 'Write a private message…' : 'Write a message…'}" required></textarea><button class="btn" type="submit" ${!chatDraft.trim() ? 'disabled' : ''}>Send</button></form>` : `<p class="chat-disabled">Chat and whispers are disabled by the moderator.</p>`;
-  return `<section class="chat-panel panel"><div class="section-head"><h2>Chat</h2><span class="count-label">${messages.length} / 60</span></div>${hostControls}<div class="chat-log" id="chat-log">${messageMarkup || '<div class="empty">No messages yet.</div>'}</div>${composer}</section>`;
+  return `<section class="chat-panel panel"><div class="section-head"><div class="chat-title"><h2>Chat</h2>${botsPresent ? '<span class="ai-beta-badge" title="AI chat beta"><span aria-hidden="true">β</span> AI BETA</span>' : ''}</div><span class="count-label">${messages.length} / 60</span></div>${hostControls}<div class="chat-log" id="chat-log">${messageMarkup || '<div class="empty">No messages yet.</div>'}</div>${composer}</section>`;
 }
 function renderArtifactPool() {
   if (room.roles.Curator < 1) return '';
