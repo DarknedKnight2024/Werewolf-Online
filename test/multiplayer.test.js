@@ -333,14 +333,26 @@ test('moderator can independently disable public chat and whispers', async () =>
   assert.ok(second.latestRoom.chat.some((message) => message.text === 'Private clue'));
   assert.ok(third.latestRoom.chat.some((message) => message.text === 'Private clue'));
   assert.equal(first.latestRoom.chat.some((message) => message.text === 'Private clue'), false);
-  assert.equal(host.latestRoom.chat.some((message) => message.text === 'Private clue'), false);
+  const moderatedWhisper = host.latestRoom.chat.find((message) => message.text === 'Private clue');
+  assert.ok(moderatedWhisper, 'the moderator can review private whispers');
+  assert.equal(moderatedWhisper.toId, third.latestRoom.viewer.playerId);
+  await request(host, 'host:chat-remove', { messageId: moderatedWhisper.id });
+  await waitForRoom(clients, (room) => !room.chat?.some((message) => message.id === moderatedWhisper.id), 'moderator message removal');
+  await request(host, 'host:chat-settings', { setting: 'publicEnabled', enabled: false });
   await request(host, 'host:add-bot', { name: 'Friendly AI', settings: { personality: 'Friendly', talkativeness: 'Quiet' } });
+  assert.equal(host.latestRoom.chatSettings.publicEnabled, true, 'adding an AI re-enables public chat');
   const bot = host.latestRoom.players.find((player) => player.isBot);
-  await request(third, 'chat:send', { scope: 'whisper', targetId: bot.id, text: 'Any thoughts?' });
-  await waitForRoom([third], (room) => room.chat?.some((message) => message.isBot && message.scope === 'whisper'), 'AI private reply');
-  assert.ok(third.latestRoom.chat.some((message) => message.isBot && message.fromId === bot.id));
-  assert.equal(first.latestRoom.chat.some((message) => message.fromId === bot.id), false);
-  assert.equal(host.latestRoom.chat.some((message) => message.fromId === bot.id), false);
+  await waitForRoom(clients, (room) => room.players.some((player) => player.id === bot.id), 'AI roster broadcast');
+  assert.match(bot.aiCode, /^AI-[A-F0-9]{6}$/);
+  assert.equal(third.latestRoom.players.find((player) => player.id === bot.id).aiCode, undefined, 'AI codes are moderator-only');
+  await assert.rejects(request(first, 'host:bot-icon', { playerId: bot.id, icon: '🌲' }), /Only the moderator/);
+  await request(host, 'host:bot-icon', { playerId: bot.id, icon: '🌲' });
+  await waitForRoom(clients, (room) => room.players.find((player) => player.id === bot.id)?.icon === '🌲', 'moderator AI icon change');
+  await assert.rejects(request(host, 'host:bot-icon', { playerId: bot.id, icon: third.latestRoom.players.find((player) => player.id === third.latestRoom.viewer.playerId).icon }), /available icon/);
+  await assert.rejects(request(third, 'chat:send', { scope: 'whisper', targetId: bot.id, text: 'Any thoughts?' }), /AI players do not receive whispers/);
+  assert.equal(third.latestRoom.chat.some((message) => message.isBot && message.scope === 'whisper'), false);
+  await assert.rejects(request(host, 'host:chat-settings', { setting: 'publicEnabled', enabled: false }), /must stay enabled while AI players/);
+  await request(host, 'host:remove-bot', { playerId: bot.id });
   await request(host, 'host:chat-settings', { setting: 'publicEnabled', enabled: false });
   await assert.rejects(request(third, 'chat:send', { scope: 'public', text: 'This should be blocked' }), /Public chat is disabled/);
 });
@@ -377,6 +389,58 @@ test('AI players complete Dusk marks and Night actions automatically', async () 
   assert.equal(host.latestRoom.results.marksUsed, true);
   assert.ok(host.latestRoom.players.some((player) => player.mark === 'Vampire'));
   assert.ok(host.latestRoom.players.some((player) => player.mark === 'Fear'));
+});
+
+test('AI discussion uses private information with unique AI codes', async () => {
+  const [host] = await Promise.all([connectClient()]);
+  await beginRoom([host]);
+  for (let index = 0; index < 3; index += 1) {
+    await request(host, 'host:add-bot', { name: `Seer AI ${index + 1}`, settings: { personality: 'Analytical', talkativeness: 'Chatty' } });
+  }
+  const aiCodes = host.latestRoom.players.map((player) => player.aiCode);
+  assert.equal(new Set(aiCodes).size, 3);
+  await configureDeck(host, { Seer: 3, Villager: 3 });
+  await request(host, 'host:start');
+  await waitForRoom([host], (room) => room.stage === 'discussion', 'AI Seers to finish information phase');
+  await request(host, 'host:timer', { running: true });
+  await waitForRoom([host], (room) => room.chat.some((message) => message.isBot && message.text.includes("card as Seer")), 'AI to discuss a seen card');
+  assert.ok(host.latestRoom.chat.every((message) => message.scope === 'public'), 'AI conversation is public');
+});
+
+test('AI players complete a full game alongside human players', async () => {
+  const clients = await Promise.all(Array.from({ length: 3 }, () => connectClient()));
+  const [host, ...players] = clients;
+  await beginRoom(clients);
+  await request(host, 'host:add-bot', { name: 'Village AI', settings: { difficulty: 'Sharp' } });
+  await configureDeck(host, { Villager: 6 });
+  await request(host, 'host:start');
+  await waitForRoom(clients, (room) => room.stage === 'roles', 'mixed game role reveal');
+  await Promise.all(players.map((client) => request(client, 'player:role-ready')));
+  await waitForRoom(clients, (room) => room.stage === 'night', 'mixed game Night');
+  await Promise.all(players.map((client) => {
+    const targetId = client.latestRoom.players.find((player) => player.id !== client.latestRoom.viewer.playerId).id;
+    return request(client, 'player:night-answer', { targetId });
+  }));
+  await waitForRoom(clients, (room) => room.stage === 'information', 'mixed game Information');
+  await Promise.all(players.map((client) => request(client, 'player:information-done')));
+  await waitForRoom(clients, (room) => room.stage === 'discussion', 'mixed game Discussion');
+  const bot = host.latestRoom.players.find((player) => player.isBot);
+  await request(host, 'host:timer', { running: true });
+  await waitForRoom([host], (room) => room.chat.some((message) => message.isBot && message.scope === 'public'), 'AI timer-start discussion');
+  const botMessagesBeforeClaim = host.latestRoom.chat.filter((message) => message.isBot && message.scope === 'public').length;
+  await request(players[0], 'chat:send', { scope: 'public', text: 'I saw Player 1 as a werewolf on a card; vote Player 1.' });
+  await waitForRoom([host], (room) => room.chat.filter((message) => message.isBot && message.scope === 'public').length > botMessagesBeforeClaim, 'AI reply to a public claim');
+  assert.ok(host.latestRoom.chat.some((message) => message.isBot && message.text.includes('Player 1')), 'AI discussion responds to the named claim');
+  await request(host, 'host:timer', { running: false });
+  await request(host, 'host:begin-voting');
+  await Promise.all(players.map((client) => {
+    return request(client, 'player:vote', { targetId: bot.id });
+  }));
+  await waitForRoom(clients, (room) => room.stage === 'results', 'mixed human and AI votes');
+  assert.ok(host.latestRoom.players.find((player) => player.isBot).voted, 'the AI casts its own vote');
+  const namedSuspect = host.latestRoom.players.find((player) => player.name === 'Player 1');
+  assert.ok(host.latestRoom.results.voteCounts[namedSuspect.id] > 0, 'public chat influences the AI vote');
+  assert.equal(Object.values(host.latestRoom.results.voteCounts).reduce((sum, count) => sum + count, 0), 3);
 });
 
 test('accounts persist player seats and villages without exposing them publicly', async () => {

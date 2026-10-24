@@ -70,6 +70,11 @@ const adminSessions = new Map();
 
 function randomToken() { return crypto.randomBytes(24).toString('base64url'); }
 function shortKey(length = 8) { return crypto.randomBytes(Math.ceil(length / 2)).toString('hex').slice(0, length).toUpperCase(); }
+function newAiCode(room) {
+  let code;
+  do { code = `AI-${shortKey(6)}`; } while (room.players.some((player) => player.aiCode === code));
+  return code;
+}
 function normalizeKey(value) { return String(value || '').trim().toUpperCase(); }
 function tokenHash(token) { return crypto.createHash('sha256').update(String(token || '')).digest('hex'); }
 function getAccountEncryptionKey() {
@@ -268,7 +273,7 @@ function inspectablePlayer(room, id, viewerId, allowSelf = false) {
 }
 function recordCardView(player, target, role, label = 'Saw') {
   player.seenCards ||= [];
-  player.seenCards.push({ name: target.name, role });
+  player.seenCards.push({ id: target.id, name: target.name, role });
   player.events.push(`${label} ${target.name}’s card: ${role}.`);
 }
 function roleQuestion(action, room) {
@@ -290,25 +295,21 @@ function botChatText(player, context) {
   const messages = {
     Friendly: {
       hello: ['Good to see everyone. I am still piecing things together.', 'That is an interesting point. I am keeping an open mind.'],
-      whisper: ['Thanks for telling me. I will think it over.', 'I hear you. I am not ready to commit yet.'],
       discussion: ['I have a few clues, but I want to hear everyone first.', 'Let us compare notes before we settle on a suspect.'],
       result: ['Good game, everyone. That was fun.', 'Nice round. I would play another.'],
     },
     Analytical: {
       hello: ['I am comparing claims with the information available.', 'I will avoid jumping to conclusions until the votes make sense.'],
-      whisper: ['Noted. I will compare that with the public claims.', 'That changes one possibility, but it is not enough by itself.'],
       discussion: ['We should separate what was observed from what is inferred.', 'The vote pattern may be more useful than a confident claim.'],
       result: ['Good game. The vote pattern was informative.', 'Round complete. I am ready to test another theory.'],
     },
     Bold: {
       hello: ['Someone is bluffing. I just have to work out who.', 'I have a suspect, but I want to hear the defense first.'],
-      whisper: ['That is a strong claim. I will remember who said it.', 'Interesting. I may use that when I make my case.'],
       discussion: ['I am ready to make a call. Who has the clearest contradiction?', 'Let us hear one concrete reason before we vote.'],
       result: ['Good game. Rematch?', 'That was a close one. Another round.'],
     },
     Quiet: {
       hello: ['I am listening for now.', 'I will share what I know when it is useful.'],
-      whisper: ['Understood. I will keep that in mind.', 'Thanks. I am listening.'],
       discussion: ['I am still listening.', 'I have nothing certain to add yet.'],
       result: ['Good game.', 'Another round sometime.'],
     },
@@ -316,22 +317,87 @@ function botChatText(player, context) {
   const options = messages[personality]?.[context] || messages.Friendly.hello;
   return options[crypto.randomInt(options.length)];
 }
+function botDiscussionText(room, bot) {
+  const personality = bot.botSettings?.personality || 'Friendly';
+  bot.discussionReplies ||= [];
+  bot.discussionEvidence ||= [];
+  const latestMessage = [...(room.chat || [])].reverse().find((message) => message.scope === 'public' && message.fromId !== bot.id && !bot.discussionReplies.includes(message.id));
+  const mentionedPlayers = latestMessage
+    ? room.players.filter((player) => player.id !== bot.id && latestMessage.text.toLowerCase().includes(player.name.toLowerCase()))
+    : [];
+  const accusation = latestMessage && /\b(wolf|werewolf|vampire|suspect|suspicious|bluff|lying|lie|vote|voting|accus|threat)\b/i.test(latestMessage.text);
+  const cardEvidence = (bot.seenCards || []).map((entry) => ({
+    key: `card:${entry.id || entry.name}:${entry.role}`,
+    text: entry.name?.startsWith('center card') ? `I saw ${entry.name}: ${entry.role}.` : `I saw ${entry.name}'s card as ${entry.role}.`,
+  }));
+  const markEvidence = (bot.seenMarks || []).filter((entry) => entry.mark && entry.mark !== 'Clarity').map((entry) => ({
+    key: `mark:${entry.name}:${entry.mark}`,
+    text: `I saw Mark of ${entry.mark} on ${entry.name}.`,
+  }));
+  const clue = [...cardEvidence, ...markEvidence].find((entry) => !bot.discussionEvidence.includes(entry.key));
+  if (clue) bot.discussionEvidence.push(clue.key);
+  if (latestMessage) bot.discussionReplies.push(latestMessage.id);
+  if (mentionedPlayers.length && accusation) {
+    const target = mentionedPlayers[0];
+    const clueText = clue ? ` ${clue.text}` : '';
+    const responses = {
+      Friendly: `I hear the concern about ${target.name}. What did you see that points there?${clueText}`,
+      Analytical: `That claim names ${target.name}; let's separate observation from inference.${clueText}`,
+      Bold: `${target.name} is a serious lead now. I want a clear answer before we vote.${clueText}`,
+      Quiet: `I heard the claim about ${target.name}. I'll keep it in mind.${clueText}`,
+    };
+    return responses[personality] || responses.Friendly;
+  }
+  if (clue) {
+    const observations = {
+      Friendly: `${clue.text} Does that fit with what you saw?`,
+      Analytical: `${clue.text} That's a clue about the card I observed, not necessarily the player's final role.`,
+      Bold: `${clue.text} We should ask them about that.`,
+      Quiet: clue.text,
+    };
+    return observations[personality] || observations.Friendly;
+  }
+  const prompts = {
+    Friendly: ['I do not have a confirmed suspect yet. What did everyone actually see?', 'Can someone explain how they reached their conclusion?'],
+    Analytical: ["Let's compare direct observations separately from guesses before deciding.", 'Which claims have independent evidence behind them?'],
+    Bold: ['I am ready to hear one concrete clue for each suspect before we vote.', 'Who has a clear answer to the claims against them?'],
+    Quiet: ['I am listening for specific observations and contradictions.', 'Has anyone noticed a detail that does not fit?'],
+  };
+  bot.discussionTurn = (bot.discussionTurn || 0) + 1;
+  const options = prompts[personality] || prompts.Friendly;
+  const prompt = options[(bot.discussionTurn - 1) % options.length];
+  if (latestMessage) return `${prompt} I am still thinking about ${latestMessage.fromName}'s point.`;
+  return prompt;
+}
 function appendChat(room, message) {
   room.chat ||= [];
   room.chat.push({ id: crypto.randomUUID(), sentAt: timestamp(), ...message });
   room.chat = room.chat.slice(-100);
 }
-function botChatMessage(room, player, context, recipientId = null) {
+function botChatMessage(room, player, context) {
   const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
-  if (recipientId ? !settings.whispersEnabled : !settings.publicEnabled) return;
+  if (!settings.publicEnabled) return;
   appendChat(room, {
-    scope: recipientId ? 'whisper' : 'public',
+    scope: 'public',
     fromId: player.id,
     fromName: player.name,
-    toId: recipientId,
-    text: botChatText(player, context),
+    text: context === 'discussion' ? botDiscussionText(room, player) : botChatText(player, context),
     isBot: true,
   });
+}
+function runBotDiscussion(room, trigger) {
+  const bots = room.players.filter((player) => player.isBot);
+  if (!bots.length || !(room.chatSettings || { publicEnabled: true }).publicEnabled) return;
+  const chances = trigger === 'timer-start'
+    ? { Quiet: 25, Balanced: 65, Chatty: 95 }
+    : trigger === 'timer-tick'
+      ? { Quiet: 8, Balanced: 35, Chatty: 70 }
+      : { Quiet: 25, Balanced: 65, Chatty: 95 };
+  let responders = bots.filter((bot) => crypto.randomInt(100) < (chances[bot.botSettings?.talkativeness] || 65));
+  if (!responders.length) responders = [bots[crypto.randomInt(bots.length)]];
+  if (trigger === 'timer-start') responders = responders.slice(0, 2);
+  else responders = [responders[crypto.randomInt(responders.length)]];
+  responders.forEach((bot) => botChatMessage(room, bot, 'discussion'));
 }
 function persist() {
   writeEncryptedStore(roomFile, [...rooms.values()]);
@@ -346,6 +412,9 @@ function loadRooms() {
       if (!/^\d{6}$/.test(room.code)) continue;
       room.players = room.players || [];
       room.players.forEach((player) => { player.connected = false; });
+      room.players.filter((player) => player.isBot && !player.aiCode).forEach((player) => { player.aiCode = newAiCode(room); });
+      room.chatSettings ||= { publicEnabled: true, whispersEnabled: true };
+      if (room.players.some((player) => player.isBot)) room.chatSettings.publicEnabled = true;
       room.hostConnected = false;
       if (room.stage === 'discussion') room.timerRunning = false;
       rooms.set(room.code, room);
@@ -359,7 +428,11 @@ function loadSavedVillages() {
     const saved = readEncryptedStore(savedVillagesFile);
     for (const entry of saved) {
       savedVillages.set(entry.id, entry);
-      if (!rooms.has(entry.code)) rooms.set(entry.code, { ...entry, hostAccountId: entry.ownerAccountId || null, players: entry.players.map((player) => ({ ...player, tokenHash: tokenHash(player.key || randomToken()), key: player.key || shortKey(8), connected: Boolean(player.connected) })), hostConnected: false, stage: 'lobby' });
+      if (!rooms.has(entry.code)) {
+        const room = { ...entry, hostAccountId: entry.ownerAccountId || null, players: entry.players.map((player) => ({ ...player, tokenHash: tokenHash(player.key || randomToken()), key: player.key || shortKey(8), connected: Boolean(player.connected) })), hostConnected: false, stage: 'lobby' };
+        room.players.filter((player) => player.isBot && !player.aiCode).forEach((player) => { player.aiCode = newAiCode(room); });
+        rooms.set(entry.code, room);
+      }
     }
   } catch (error) {
     if (error.code !== 'ENOENT') console.error('Unable to load saved villages:', error.message);
@@ -397,9 +470,9 @@ function snapshot(room, session) {
     nightQuestion: room.nightQuestion,
     artifactPool: session.kind === 'host' ? room.artifactPool : undefined,
     chatSettings: room.chatSettings || { publicEnabled: true, whispersEnabled: true },
-    chat: (room.chat || []).filter((message) => message.scope === 'public' || session.kind === 'player' && (message.fromId === user?.id || message.toId === user?.id)).slice(-60),
+    chat: (room.chat || []).filter((message) => message.scope === 'public' || session.kind === 'host' || session.kind === 'player' && (message.fromId === user?.id || message.toId === user?.id)).slice(-60),
     publicEvents: room.publicEvents || [],
-    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, isBot: Boolean(player.isBot), botSettings: hostView && player.isBot ? player.botSettings : undefined, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.isBot || player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
+    players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, isBot: Boolean(player.isBot), aiCode: hostView && player.isBot ? player.aiCode : undefined, botSettings: hostView && player.isBot ? player.botSettings : undefined, rejoinKey: hostView ? player.key : undefined, connected: Boolean(player.isBot || player.activeTab && Date.now() - (player.lastPresenceAt || 0) < 7000), shielded: Boolean(player.shielded), artifact: Boolean(player.artifact), ready: Boolean(room.stage === 'roles' ? room.roleReady?.[player.id] : room.stage === 'dusk' ? room.duskActions?.[activeDuskAction(room, player.id)?.key] : room.stage === 'mark' ? room.markReady?.[player.id] : room.stage === 'night' ? room.nightActions?.[player.id] : room.stage === 'information' ? room.infoDone?.[player.id] : false), voted: Boolean(room.votes?.[player.id]), outcome: room.stage === 'results' ? playerOutcome(room, player) : null, ...(room.stage === 'results' ? { card: player.card, startCard: player.startCard, effectiveRole: player.effectiveRole || null, ...(room.duskUsed ? { mark: player.mark } : {}), artifactName: player.artifactName || null, artifactRole: player.artifactRole || null, transformedRole: player.transformedRole || null } : {}) })),
     viewer: { kind: session.kind, playerId: session.playerId || null, name: user?.name || 'Moderator' },
     action: room.stage === 'setup' ? {
       ...(session.kind === 'host' ? {} : setupAction ? { role: setupAction.role, questionOnly: Boolean(setupAction.questionOnly), submitted: Boolean(room.setupActions?.[user.id]) } : {}),
@@ -540,6 +613,53 @@ function randomBotTarget(room, bot, predicate = () => true) {
   const choices = room.players.filter((player) => player.id !== bot.id && predicate(player));
   return choices.length ? choices[crypto.randomInt(choices.length)] : null;
 }
+function botKnownAllies(room, bot) {
+  const role = trueRole(bot);
+  if (wolfTeamRole(bot) || role === 'Minion') return new Set(room.players.filter((player) => player.id !== bot.id && wolfTeamRole(player)).map((player) => player.id));
+  if (VAMPIRE_ROLES.has(role) || bot.mark === 'Vampire') return new Set(room.players.filter((player) => player.id !== bot.id && vampireTeamRole(player)).map((player) => player.id));
+  if (role === 'Mason') return new Set(room.players.filter((player) => player.id !== bot.id && trueRole(player) === 'Mason').map((player) => player.id));
+  return new Set();
+}
+function botSuspicionScore(room, bot, target) {
+  const personality = bot.botSettings?.personality || 'Friendly';
+  const difficulty = bot.botSettings?.difficulty || 'Balanced';
+  const observed = [...(bot.seenCards || [])].reverse().find((entry) => entry.id === target.id || entry.name === target.name);
+  let score = 0;
+  if (observed) {
+    if (['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf'].includes(observed.role)) score += 9;
+    else if (['Vampire', 'Master', 'Count', 'Renfield'].includes(observed.role)) score += 7;
+    else if (observed.role === 'Tanner') score += trueRole(bot) === 'Tanner' ? 7 : -3;
+    else score -= 1;
+  }
+  const mark = [...(bot.seenMarks || [])].reverse().find((entry) => entry.id === target.id || entry.name === target.name);
+  if (mark) {
+    if (['Traitor', 'Assassin', 'Bat', 'Fear', 'Vampire'].includes(mark.mark)) score += mark.mark === 'Traitor' ? 2 : 1;
+    else if (mark.mark === 'Clarity') score -= 0.5;
+  }
+  const latestBySpeaker = new Map();
+  for (const message of room.chat || []) {
+    if (message.scope !== 'public' || message.fromId === bot.id || !message.text.toLowerCase().includes(target.name.toLowerCase())) continue;
+    latestBySpeaker.set(message.fromId, message);
+  }
+  const persuasion = ({ Friendly: 1.8, Analytical: 0.65, Bold: 1.4, Quiet: 0.9 })[personality];
+  for (const message of latestBySpeaker.values()) {
+    if (!/\b(wolf|werewolf|vampire|suspect|suspicious|bluff|lying|lie|vote|voting|accus|threat|innocent|clear|trust|defend)\b/i.test(message.text)) continue;
+    const denial = /\b(not|isn't|isnt|innocent|clear|trust|defend|defending)\b/i.test(message.text);
+    const evidence = /\b(saw|see|checked|check|looked|found|card|mark|confirmed|proof|evidence)\b/i.test(message.text);
+    const evidenceWeight = difficulty === 'Sharp' ? 3 : difficulty === 'Balanced' ? 2 : 1;
+    score += (denial ? -1 : 1) * (evidence ? evidenceWeight : 1) * persuasion;
+  }
+  return score;
+}
+function botStrategicTargets(room, bot, predicate = () => true, count = 1) {
+  const allies = botKnownAllies(room, bot);
+  const candidates = room.players.filter((player) => player.id !== bot.id && !allies.has(player.id) && predicate(player));
+  candidates.sort((left, right) => botSuspicionScore(room, bot, right) - botSuspicionScore(room, bot, left));
+  return candidates.slice(0, count);
+}
+function botStrategicTarget(room, bot, predicate = () => true) {
+  return botStrategicTargets(room, bot, predicate, 1)[0] || randomBotTarget(room, bot, predicate);
+}
 function finishSentinel(room, bot, target) {
   if (!target) return;
   room.shields ||= {};
@@ -591,12 +711,12 @@ function botDuskData(room, action, bot) {
     return { targetId: answer?.id };
   }
   if (action.key === 'vampire-mark') {
-    const target = randomBotTarget(room, bot, (player) => !VAMPIRE_ROLES.has(effectiveRole(player)) && player.mark !== 'Vampire');
+    const target = botStrategicTarget(room, bot, (player) => !VAMPIRE_ROLES.has(effectiveRole(player)) && player.mark !== 'Vampire');
     return target ? { targetId: target.id } : { skip: true };
   }
   if (action.role === 'Count') {
     const vampireTargetId = pendingVampireTarget(room);
-    const target = randomBotTarget(room, bot, (player) => player.id !== vampireTargetId);
+    const target = botStrategicTarget(room, bot, (player) => player.id !== vampireTargetId);
     return target ? { targetId: target.id } : { skip: true };
   }
   if (action.role === 'Diseased') {
@@ -604,16 +724,16 @@ function botDuskData(room, action, bot) {
     return { targetId: room.players[(index + (crypto.randomInt(2) ? 1 : room.players.length - 1)) % room.players.length].id };
   }
   if (action.role === 'Cupid') {
-    const targets = room.players.filter((player) => player.id !== bot.id).slice(0, 2);
+    const targets = botStrategicTargets(room, bot, () => true, 2);
     return targets.length === 2 ? { targetIds: targets.map((player) => player.id) } : { skip: true };
   }
   if (action.role === 'Renfield') return {};
   if (action.role === 'Priest') {
-    const target = randomBotTarget(room, bot);
+    const target = botStrategicTarget(room, bot);
     return target ? { targetId: target.id } : { skip: true };
   }
   if (['Instigator', 'Assassin'].includes(action.role)) {
-    const target = randomBotTarget(room, bot);
+    const target = botStrategicTarget(room, bot);
     return target ? { targetId: target.id } : { skip: true };
   }
   return { skip: true };
@@ -628,11 +748,11 @@ function runBotDusk(room) {
 }
 function botNightData(room, action, bot) {
   if (roleQuestion(action, room)) {
-    const target = randomBotTarget(room, bot);
+    const target = botStrategicTarget(room, bot);
     return { targetId: target?.id };
   }
-  const target = randomBotTarget(room, bot, (player) => !player.shielded);
-  const twoTargets = room.players.filter((player) => player.id !== bot.id && !player.shielded).slice(0, 2);
+  const target = botStrategicTarget(room, bot, (player) => !player.shielded);
+  const twoTargets = botStrategicTargets(room, bot, (player) => !player.shielded, 2);
   switch (action.role) {
     case 'Werewolf': return { centerIndex: crypto.randomInt(room.center.length) };
     case 'Mystic Wolf':
@@ -666,11 +786,7 @@ function startDiscussion(room) {
   room.stage = 'discussion';
   room.discussionSeconds = 300;
   room.timerRunning = false;
-  const bots = room.players.filter((player) => player.isBot);
-  for (const bot of bots) {
-    const chance = ({ Quiet: 12, Balanced: 38, Chatty: 72 }[bot.botSettings?.talkativeness] || 0);
-    if (crypto.randomInt(100) < chance) botChatMessage(room, bot, 'discussion');
-  }
+  delete room.nextBotChatAt;
 }
 function runBotInformation(room) {
   for (const bot of room.players.filter((player) => player.isBot)) {
@@ -680,7 +796,7 @@ function runBotInformation(room) {
       const roleTarget = randomBotTarget(room, bot, (player) => player.id !== markTarget?.id);
       if (markTarget && roleTarget) {
         bot.seenMarks ||= [];
-        bot.seenMarks.push({ name: markTarget.name, mark: markTarget.mark });
+        bot.seenMarks.push({ id: markTarget.id, name: markTarget.name, mark: markTarget.mark });
         recordCardView(bot, roleTarget, trueRole(roleTarget));
         room.infoActions[bot.id] = true;
       }
@@ -690,18 +806,11 @@ function runBotInformation(room) {
   if (room.players.every((player) => room.infoDone[player.id])) startDiscussion(room);
 }
 function botVoteTarget(room, bot) {
-  const enemies = (player) => {
-    if (teamForPlayer(bot) === 'wolves') return !wolfTeamRole(player);
-    if (teamForPlayer(bot) === 'vampires') return !vampireTeamRole(player);
-    if (trueRole(bot) === 'Tanner') return true;
-    return wolfTeamRole(player) || vampireTeamRole(player);
-  };
-  const knownThreats = new Set((bot.seenCards || []).filter((entry) => ['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Vampire', 'Master', 'Count'].includes(entry.role)).map((entry) => room.players.find((player) => player.name === entry.name)?.id).filter(Boolean));
+  const knownAllies = botKnownAllies(room, bot);
   const candidates = room.players.filter((player) => player.id !== bot.id);
   const difficulty = bot.botSettings?.difficulty || 'Balanced';
-  const threatWeight = ({ Casual: 1, Balanced: 2, Sharp: 3 })[difficulty];
-  const evidenceWeight = ({ Casual: 2, Balanced: 6, Sharp: 12 })[difficulty];
-  const scores = new Map(candidates.map((player) => [player.id, (enemies(player) ? threatWeight : 0) + (knownThreats.has(player.id) ? evidenceWeight : 0) + (player.mark === 'Traitor' ? 1 : 0) + crypto.randomInt(2)]));
+  const uncertainty = ({ Casual: 1.8, Balanced: 1, Sharp: 0.55 })[difficulty];
+  const scores = new Map(candidates.map((player) => [player.id, knownAllies.has(player.id) ? -100 : botSuspicionScore(room, bot, player) + crypto.randomInt(100) / 100 * uncertainty]));
   candidates.sort((left, right) => scores.get(right.id) - scores.get(left.id));
   return candidates[0];
 }
@@ -910,7 +1019,7 @@ function resolveNight(room) {
       if (['Werewolf', 'Mystic Wolf', 'Alpha Wolf', 'Dream Wolf', 'Tanner'].includes(role)) {
         player.events.push(`Privately revealed ${target.name}’s card: ${role}.`);
         player.seenCards ||= [];
-        player.seenCards.push({ name: target.name, role });
+        player.seenCards.push({ id: target.id, name: target.name, role });
       } else {
         room.publicEvents.push(`${player.name} revealed ${target.name}’s card: ${role}.`);
       }
@@ -1287,9 +1396,21 @@ io.on('connection', (socket) => {
     if (!icon) throw new Error('No player icons are available for another AI player.');
     const botSettings = normalizeBotSettings(payload.settings);
     const name = String(payload.name || '').trim().slice(0, 18) || `${botSettings.personality} AI ${room.players.filter((player) => player.isBot).length + 1}`;
-    room.players.push({ id: crypto.randomUUID(), name, icon, isBot: true, botSettings, connected: true, activeTab: false });
+    room.players.push({ id: crypto.randomUUID(), aiCode: newAiCode(room), name, icon, isBot: true, botSettings, connected: true, activeTab: false });
+    room.chatSettings ||= { publicEnabled: true, whispersEnabled: true };
+    room.chatSettings.publicEnabled = true;
     const fixedCards = roleCount(room) - room.roles.Villager;
     room.roles.Villager = Math.max(0, room.players.length + 3 - fixedCards);
+    updateRoom(room);
+  }));
+
+  socket.on('host:bot-icon', acked((payload) => {
+    const room = requireHost(socket);
+    if (room.stage !== 'lobby') throw new Error('AI icons are locked after the cards are dealt.');
+    const player = playerById(room, String(payload.playerId || ''));
+    if (!player?.isBot) throw new Error('Choose an AI player to change its icon.');
+    if (!ICONS.includes(payload.icon) || room.players.some((entry) => entry.id !== player.id && entry.icon === payload.icon)) throw new Error('Choose an available icon.');
+    player.icon = payload.icon;
     updateRoom(room);
   }));
 
@@ -1319,8 +1440,18 @@ io.on('connection', (socket) => {
   socket.on('host:chat-settings', acked((payload) => {
     const room = requireHost(socket);
     if (!['publicEnabled', 'whispersEnabled'].includes(payload.setting) || typeof payload.enabled !== 'boolean') throw new Error('Choose a valid chat setting.');
+    if (payload.setting === 'publicEnabled' && !payload.enabled && room.players.some((player) => player.isBot)) throw new Error('Public chat must stay enabled while AI players are in the room.');
     room.chatSettings ||= { publicEnabled: true, whispersEnabled: true };
     room.chatSettings[payload.setting] = payload.enabled;
+    updateRoom(room);
+  }));
+
+  socket.on('host:chat-remove', acked((payload) => {
+    const room = requireHost(socket);
+    const messageId = String(payload.messageId || '');
+    const messageIndex = (room.chat || []).findIndex((message) => message.id === messageId);
+    if (messageIndex < 0) throw new Error('That chat message is no longer available.');
+    room.chat.splice(messageIndex, 1);
     updateRoom(room);
   }));
 
@@ -1345,14 +1476,11 @@ io.on('connection', (socket) => {
       if (!sender) throw new Error('Only players can whisper to another player.');
       recipient = playerById(room, String(payload.targetId || ''));
       if (!recipient || recipient.id === sender.id) throw new Error('Choose another player to whisper to.');
+      if (recipient.isBot) throw new Error('AI players do not receive whispers. Use public chat to talk to them.');
     }
     room.chatRate[senderId] = now;
     appendChat(room, { scope, fromId: senderId, fromName: sender?.name || 'Moderator', toId: recipient?.id || null, text, isBot: false });
-    if (recipient?.isBot) botChatMessage(room, recipient, 'whisper', sender.id);
-    else if (scope === 'public') {
-      const respondingBots = room.players.filter((player) => player.isBot && ({ Quiet: 8, Balanced: 28, Chatty: 60 }[player.botSettings?.talkativeness] || 0) > crypto.randomInt(100));
-      if (respondingBots.length) botChatMessage(room, respondingBots[crypto.randomInt(respondingBots.length)], 'hello');
-    }
+    if (scope === 'public') runBotDiscussion(room, 'human-message');
     updateRoom(room);
   }));
 
@@ -1675,7 +1803,7 @@ io.on('connection', (socket) => {
     const roleTarget = playerById(room, payload.roleTargetId);
     if (!markTarget || !roleTarget || markTarget.id === roleTarget.id) throw new Error('Choose two different players, one for a mark and one for a role.');
     player.seenMarks ||= [];
-    player.seenMarks.push({ name: markTarget.name, mark: markTarget.mark });
+    player.seenMarks.push({ id: markTarget.id, name: markTarget.name, mark: markTarget.mark });
     recordCardView(player, roleTarget, trueRole(roleTarget));
     room.infoActions ||= {};
     room.infoActions[player.id] = true;
@@ -1687,16 +1815,23 @@ io.on('connection', (socket) => {
     if (room.stage !== 'discussion') throw new Error('The discussion timer is not active now.');
     if (payload.running) {
       room.timerRunning = true;
+      runBotDiscussion(room, 'timer-start');
+      room.nextBotChatAt = Date.now() + 20000 + crypto.randomInt(15000);
       if (!timers.has(room.code)) {
         timers.set(room.code, setInterval(() => {
           if (!room.timerRunning || room.stage !== 'discussion') return stopTimer(room.code);
           room.discussionSeconds = Math.max(0, room.discussionSeconds - 1);
           if (room.discussionSeconds === 0) { room.timerRunning = false; stopTimer(room.code); }
+          if (room.timerRunning && Date.now() >= (room.nextBotChatAt || 0)) {
+            runBotDiscussion(room, 'timer-tick');
+            room.nextBotChatAt = Date.now() + 18000 + crypto.randomInt(18000);
+          }
           updateRoom(room);
         }, 1000));
       }
     } else {
       room.timerRunning = false;
+      delete room.nextBotChatAt;
       stopTimer(room.code);
     }
     updateRoom(room);
@@ -1706,6 +1841,7 @@ io.on('connection', (socket) => {
     const room = requireHost(socket);
     if (room.stage !== 'discussion') throw new Error('Voting can only start after discussion.');
     room.timerRunning = false;
+    delete room.nextBotChatAt;
     stopTimer(room.code);
     room.votes = {};
     room.stage = 'voting';
@@ -1729,6 +1865,7 @@ io.on('connection', (socket) => {
     if (room.stage !== 'results') throw new Error('This game has not finished.');
     for (const player of room.players) {
       for (const key of ['card', 'startCard', 'mark', 'events', 'seenCards', 'seenMarks', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole', 'assassinTargetId']) delete player[key];
+      for (const key of ['discussionReplies', 'discussionEvidence', 'discussionTurn']) delete player[key];
     }
     for (const key of ['center', 'duskQueue', 'duskActions', 'markReady', 'lovers', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'infoQueue', 'infoActions', 'votes', 'votesForDiseased', 'voteCounts', 'deadIds', 'assassinTargetId', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
     const question = QUESTIONS[crypto.randomInt(QUESTIONS.length)];
@@ -1743,6 +1880,7 @@ io.on('connection', (socket) => {
     if (room.stage === 'lobby') throw new Error('The lobby is already open.');
     for (const player of room.players) {
       for (const key of ['card', 'startCard', 'mark', 'events', 'seenCards', 'seenMarks', 'setupTarget', 'effectiveRole', 'transformedRole', 'nightAnswer', 'voteTarget', 'shielded', 'artifact', 'artifactName', 'artifactRole', 'assassinTargetId']) delete player[key];
+      for (const key of ['discussionReplies', 'discussionEvidence', 'discussionTurn']) delete player[key];
     }
     for (const key of ['center', 'duskQueue', 'duskActions', 'markReady', 'lovers', 'nightQueue', 'nightActions', 'alphaReserves', 'nightIndex', 'setupIndex', 'roleReady', 'shields', 'infoDone', 'infoQueue', 'infoActions', 'votes', 'votesForDiseased', 'voteCounts', 'deadIds', 'assassinTargetId', 'winner', 'winnerTeam', 'publicEvents']) delete room[key];
     room.discussionSeconds = 0;
@@ -1762,7 +1900,7 @@ io.on('connection', (socket) => {
       savedAt: timestamp(),
       hostKey: room.hostKey,
       roles: { ...room.roles },
-      players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, key: player.key, connected: player.connected, isBot: Boolean(player.isBot), botSettings: player.isBot ? player.botSettings : undefined })),
+      players: room.players.map((player) => ({ id: player.id, name: player.name, icon: player.icon, key: player.key, connected: player.connected, isBot: Boolean(player.isBot), aiCode: player.isBot ? player.aiCode : undefined, botSettings: player.isBot ? player.botSettings : undefined })),
       artifactPool: [...(room.artifactPool || [])],
       question: room.question,
       nightQuestion: room.nightQuestion,

@@ -244,32 +244,47 @@ function renderIconCategories(reserved = [], current = '') {
 }
 function playerList() {
   if (!room.players.length) return '<div class="empty">No players yet. Copy the invite link to bring your village together.</div>';
-  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${player.isBot ? '<span class="host-tag">AI</span>' : ''}${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.isBot ? 'AI player' : player.connected ? 'Connected' : 'Offline'}"></span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? player.isBot ? `<button class="kick-btn" data-action="remove-bot" data-id="${esc(player.id)}" aria-label="Remove AI ${esc(player.name)}" title="Remove AI player">×</button>` : `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
+  return `<div class="player-list">${room.players.map((player) => `<div class="player-row"><span class="player-icon">${player.icon}</span><span class="player-name">${esc(player.name)}</span>${player.isBot ? `<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> BETA</span>${room.viewer.kind === 'host' ? `<span class="host-tag">${esc(player.aiCode || 'AI')}</span>` : ''}` : ''}${room.viewer.kind === 'host' && player.rejoinKey ? `<span class="host-tag">${esc(player.rejoinKey)}</span>` : ''}${player.shielded ? '<span class="shield-tag" title="Sentinel shield">🛡</span>' : ''}${player.artifact ? '<span class="artifact-tag" title="Has a hidden artifact">✦</span>' : ''}<span class="connection-dot ${player.connected ? 'online' : ''}" title="${player.isBot ? 'AI player' : player.connected ? 'Connected' : 'Offline'}"></span>${player.ready ? '<span class="host-tag">Ready</span>' : ''}${player.voted ? '<span class="host-tag">Voted</span>' : ''}${room.viewer.kind === 'host' && room.stage === 'lobby' ? player.isBot ? `<button class="kick-btn" data-action="remove-bot" data-id="${esc(player.id)}" aria-label="Remove AI ${esc(player.name)}" title="Remove AI player">×</button>` : `<button class="kick-btn" data-action="kick-player" data-id="${esc(player.id)}" aria-label="Remove ${esc(player.name)}" title="Remove player">×</button>` : ''}</div>`).join('')}</div>`;
+}
+function renderBotIconSelect(bot) {
+  const reservedIcons = room.players.filter((player) => player.id !== bot.id).map((player) => player.icon);
+  const options = ICON_CATEGORIES.map((category) => `<optgroup label="${category.name}">${category.icons.map((icon) => `<option value="${esc(icon)}" ${icon === bot.icon ? 'selected' : ''} ${reservedIcons.includes(icon) ? 'disabled' : ''}>${esc(icon)}</option>`).join('')}</optgroup>`).join('');
+  return `<select class="bot-setting" data-bot-icon data-player-id="${esc(bot.id)}" aria-label="Icon for AI ${esc(bot.name)}">${options}</select>`;
 }
 function renderBotControls() {
   if (room.viewer.kind !== 'host' || room.stage !== 'lobby') return '';
   const bots = room.players.filter((player) => player.isBot);
   if (!bots.length) return '';
   const options = (values, current, playerId, setting) => `<select class="bot-setting" data-bot-setting data-player-id="${esc(playerId)}" data-setting="${setting}" aria-label="${esc(setting)} for AI player">${values.map((value) => `<option value="${value}" ${current === value ? 'selected' : ''}>${value}</option>`).join('')}</select>`;
-  return `<div class="bot-settings"><h3>AI settings</h3>${bots.map((bot) => `<div class="bot-settings-row"><strong>${bot.icon} ${esc(bot.name)}</strong>${options(['Friendly', 'Analytical', 'Bold', 'Quiet'], bot.botSettings?.personality || 'Friendly', bot.id, 'personality')}${options(['Casual', 'Balanced', 'Sharp'], bot.botSettings?.difficulty || 'Balanced', bot.id, 'difficulty')}${options(['Quiet', 'Balanced', 'Chatty'], bot.botSettings?.talkativeness || 'Balanced', bot.id, 'talkativeness')}</div>`).join('')}</div>`;
+  return `<div class="bot-settings"><h3>AI settings</h3>${bots.map((bot) => `<div class="bot-settings-row"><div class="bot-settings-identity"><strong>${esc(bot.name)}</strong><span class="host-tag">${esc(bot.aiCode || 'AI')}</span></div>${renderBotIconSelect(bot)}${options(['Friendly', 'Analytical', 'Bold', 'Quiet'], bot.botSettings?.personality || 'Friendly', bot.id, 'personality')}${options(['Casual', 'Balanced', 'Sharp'], bot.botSettings?.difficulty || 'Balanced', bot.id, 'difficulty')}${options(['Quiet', 'Balanced', 'Chatty'], bot.botSettings?.talkativeness || 'Balanced', bot.id, 'talkativeness')}</div>`).join('')}</div>`;
 }
 function renderChat() {
   const settings = room.chatSettings || { publicEnabled: true, whispersEnabled: true };
   const ownId = room.viewer.kind === 'player' ? room.viewer.playerId : null;
+  const whisperTargets = room.players.filter((player) => player.id !== ownId && !player.isBot);
   const messages = room.chat || [];
   const messageMarkup = messages.map((message) => {
     const whisper = message.scope === 'whisper';
-    const recipient = whisper ? room.players.find((player) => player.id === (message.fromId === ownId ? message.toId : message.fromId)) : null;
-    const label = whisper ? `Whisper ${message.fromId === ownId ? 'to' : 'from'} ${recipient?.name || 'AI player'}` : 'Everyone';
-    return `<div class="chat-message ${whisper ? 'whisper' : ''} ${message.isBot ? 'bot-message' : ''}"><div class="chat-message-meta"><strong>${esc(message.fromName)}</strong><span>${label}</span><time>${new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time></div><p>${esc(message.text)}</p></div>`;
+    const sender = room.players.find((player) => player.id === message.fromId);
+    const recipient = whisper ? room.players.find((player) => player.id === message.toId) : null;
+    const label = whisper ? room.viewer.kind === 'host'
+      ? `Whisper · ${sender?.name || message.fromName} → ${recipient?.name || 'player'}`
+      : `Whisper ${message.fromId === ownId ? 'to' : 'from'} ${(message.fromId === ownId ? recipient : sender)?.name || 'AI player'}` : 'Everyone';
+    const removeButton = room.viewer.kind === 'host' ? `<button class="btn btn-quiet" data-action="chat-remove" data-id="${esc(message.id)}" aria-label="Remove chat message">Remove</button>` : '';
+    const botBadge = message.isBot ? '<span class="ai-beta-badge" title="AI player beta"><span aria-hidden="true">β</span> BETA</span>' : '';
+    return `<div class="chat-message ${whisper ? 'whisper' : ''} ${message.isBot ? 'bot-message' : ''}"><div class="chat-message-meta"><strong>${esc(message.fromName)}</strong>${botBadge}<span>${label}</span><time>${new Date(message.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>${removeButton}</div><p>${esc(message.text)}</p></div>`;
   }).join('');
-  const hostControls = room.viewer.kind === 'host' ? `<div class="chat-moderation"><span>Public chat ${settings.publicEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="publicEnabled">${settings.publicEnabled ? 'Disable' : 'Enable'}</button><span>Whispers ${settings.whispersEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="whispersEnabled">${settings.whispersEnabled ? 'Disable' : 'Enable'}</button></div>` : '';
+  const botsPresent = room.players.some((player) => player.isBot);
+  const publicControl = botsPresent
+    ? '<span>Public chat required for AI</span>'
+    : `<span>Public chat ${settings.publicEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="publicEnabled">${settings.publicEnabled ? 'Disable' : 'Enable'}</button>`;
+  const hostControls = room.viewer.kind === 'host' ? `<div class="chat-moderation">${publicControl}<span>Whispers ${settings.whispersEnabled ? 'on' : 'off'}</span><button class="btn btn-quiet" data-action="chat-toggle" data-setting="whispersEnabled">${settings.whispersEnabled ? 'Disable' : 'Enable'}</button></div>` : '';
   const canSendPublic = settings.publicEnabled;
-  const canWhisper = room.viewer.kind === 'player' && settings.whispersEnabled;
+  const canWhisper = room.viewer.kind === 'player' && settings.whispersEnabled && whisperTargets.length > 0;
   if (chatScope === 'whisper' && !canWhisper) chatScope = canSendPublic ? 'public' : 'whisper';
   if (!canSendPublic && canWhisper) chatScope = 'whisper';
-  if (canWhisper && !chatTargetId) chatTargetId = room.players.find((player) => player.id !== ownId)?.id || '';
-  const composer = canSendPublic || canWhisper ? `<form class="chat-form" data-form="chat"><select name="scope" id="chat-scope" aria-label="Message audience" ${!canWhisper ? 'disabled' : ''}><option value="public" ${chatScope === 'public' ? 'selected' : ''} ${!canSendPublic ? 'disabled' : ''}>Everyone</option>${canWhisper ? `<option value="whisper" ${chatScope === 'whisper' ? 'selected' : ''}>Whisper</option>` : ''}</select>${canWhisper ? `<select name="targetId" id="chat-target" aria-label="Whisper recipient" ${chatScope !== 'whisper' ? 'hidden' : ''}>${room.players.filter((player) => player.id !== ownId).map((player) => `<option value="${esc(player.id)}" ${chatTargetId === player.id ? 'selected' : ''}>${esc(player.name)}${player.isBot ? ' · AI' : ''}</option>`).join('')}</select>` : ''}<textarea id="chat-message" name="text" maxlength="240" rows="2" placeholder="${chatScope === 'whisper' ? 'Write a private message…' : 'Write a message…'}" required></textarea><button class="btn" type="submit" ${!chatDraft.trim() ? 'disabled' : ''}>Send</button></form>` : `<p class="chat-disabled">Chat and whispers are disabled by the moderator.</p>`;
+  if (canWhisper && !whisperTargets.some((player) => player.id === chatTargetId)) chatTargetId = whisperTargets[0].id;
+  const composer = canSendPublic || canWhisper ? `<form class="chat-form" data-form="chat"><select name="scope" id="chat-scope" aria-label="Message audience" ${!canWhisper ? 'disabled' : ''}><option value="public" ${chatScope === 'public' ? 'selected' : ''} ${!canSendPublic ? 'disabled' : ''}>Everyone</option>${canWhisper ? `<option value="whisper" ${chatScope === 'whisper' ? 'selected' : ''}>Whisper</option>` : ''}</select>${canWhisper ? `<select name="targetId" id="chat-target" aria-label="Whisper recipient" ${chatScope !== 'whisper' ? 'hidden' : ''}>${whisperTargets.map((player) => `<option value="${esc(player.id)}" ${chatTargetId === player.id ? 'selected' : ''}>${esc(player.name)}</option>`).join('')}</select>` : ''}<textarea id="chat-message" name="text" maxlength="240" rows="2" placeholder="${chatScope === 'whisper' ? 'Write a private message…' : 'Write a message…'}" required></textarea><button class="btn" type="submit" ${!chatDraft.trim() ? 'disabled' : ''}>Send</button></form>` : `<p class="chat-disabled">Chat and whispers are disabled by the moderator.</p>`;
   return `<section class="chat-panel panel"><div class="section-head"><h2>Chat</h2><span class="count-label">${messages.length} / 60</span></div>${hostControls}<div class="chat-log" id="chat-log">${messageMarkup || '<div class="empty">No messages yet.</div>'}</div>${composer}</section>`;
 }
 function renderArtifactPool() {
@@ -589,6 +604,8 @@ app.addEventListener('click', async (event) => {
   } else if (action === 'chat-toggle') {
     const setting = button.dataset.setting;
     await act('host:chat-settings', { setting, enabled: !room.chatSettings?.[setting] });
+  } else if (action === 'chat-remove') {
+    await act('host:chat-remove', { messageId: button.dataset.id });
   } else if (action === 'kick-player') {
     await act('host:kick-player', { playerId: button.dataset.id });
   } else if (action === 'toggle-icon-picker') {
@@ -696,6 +713,11 @@ app.addEventListener('input', (event) => {
 });
 
 app.addEventListener('change', async (event) => {
+  const botIcon = event.target.closest('[data-bot-icon]');
+  if (botIcon) {
+    await act('host:bot-icon', { playerId: botIcon.dataset.playerId, icon: botIcon.value });
+    return;
+  }
   const botSetting = event.target.closest('[data-bot-setting]');
   if (botSetting) {
     await act('host:bot-settings', { playerId: botSetting.dataset.playerId, setting: botSetting.dataset.setting, value: botSetting.value });
